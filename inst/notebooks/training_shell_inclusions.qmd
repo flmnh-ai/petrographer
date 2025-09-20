@@ -12,6 +12,14 @@ library(tidyverse)
 library(fs)
 library(here)
 library(petrographer)
+library(hipergator)
+
+# Configure HPC settings once
+hpg_configure(
+  host = "hpg",
+  user = Sys.getenv("USER"),
+  base_dir = "/blue/nicolas.gauthier/petrographer"
+)
 
 data_dir <- here("data/processed/inclusion_shell")
 
@@ -22,7 +30,7 @@ validate_dataset(data_dir)
 ## Training
 
 ```{r training}
-# Train model (HPC settings from .Renviron)
+# Train model - HPC settings configured above
 model_path <- train_model(
   data_dir = data_dir,
   output_name = "shell_inclusions_v1",

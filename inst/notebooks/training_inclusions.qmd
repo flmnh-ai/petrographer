@@ -13,6 +13,14 @@ library(magick)
 library(fs)
 library(here)
 library(petrographer)
+library(hipergator)
+
+# Configure HPC settings once
+hpg_configure(
+  host = "hpg",
+  user = Sys.getenv("USER"),
+  base_dir = "/blue/nicolas.gauthier/petrographer"
+)
 
 data_dir <- here("data/processed/inclusions")
 
@@ -23,7 +31,7 @@ validate_dataset(data_dir)
 ## Training
 
 ```{r training}
-# Train model
+# Train model - HPC settings configured above
 model_path <- train_model(
   data_dir = data_dir,
   output_name = "inclusions_v4",

@@ -5,6 +5,9 @@
 # Python trainer that is hard-set to AdamW + WarmupCosine + FREEZE_AT=1.
 # ============================================================================
 
+# Utility function
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
 #' Train a new petrography detection model
 #'
 #' Orchestrates local or HPC training using Detectron2. R computes batch size,
@@ -301,12 +304,52 @@ train_model_hpc <- function(data_dir, output_name, max_iter, learning_rate, num_
                             ims_per_batch, num_workers, hpc_env, hpc_cpus_per_task, hpc_mem, gpus, hpc_host, hpc_user,
                             hpc_base_dir, local_output_dir) {
 
-  if (is.null(hpc_base_dir) || hpc_base_dir == "") {
+  # Set up hipergator configuration if parameters provided
+  if (!is.null(hpc_host) || !is.null(hpc_user) || !is.null(hpc_base_dir)) {
+    hipergator::hpg_configure(
+      host = hpc_host %||% "hpg",
+      user = hpc_user,
+      base_dir = hpc_base_dir
+    )
+  }
+
+  # Check that base directory is configured
+  config <- hipergator::hpg_config()
+  if (is.null(config$base_dir)) {
     cli::cli_abort("Missing `hpc_base_dir`: set the base path on your HPC system or PETROGRAPHER_HPC_BASE_DIR env var.")
   }
 
-  # Build trainer CLI params for the remote run (relative to job working dir)
-  training_params <- c(
+  # Create petrographer-specific GPU template with auto-scaled resources
+  cpus <- if (!is.null(hpc_cpus_per_task)) {
+    hpc_cpus_per_task
+  } else {
+    if (gpus > 1) gpus * 4 else 4  # Auto-scale for deep learning
+  }
+
+  memory <- if (!is.null(hpc_mem)) {
+    hpc_mem
+  } else {
+    if (gpus > 1) paste0(gpus * 24, "gb") else "24gb"  # Auto-scale for deep learning
+  }
+
+  template <- hipergator::hpg_gpu_template(
+    gpus = gpus,
+    partition = "hpg-b200",  # Use beefy GPUs for deep learning
+    job_name = "petrographer_train",
+    time = "02:00:00",
+    cpus_per_task = cpus,
+    memory = memory,
+    conda_env = "/blue/nicolas.gauthier/share/conda/envs/petrographer"
+  )
+
+  # Override with custom environment if provided
+  if (!is.null(hpc_env)) {
+    template$preamble <- hpc_env
+    template$conda_env <- NULL  # Don't use default if custom preamble provided
+  }
+
+  # Build training command
+  training_args <- c(
     "--dataset-name", paste0(output_name, "_train"),
     "--annotation-json", "data/train/_annotations.coco.json",
     "--image-root", "data/train",
@@ -315,7 +358,7 @@ train_model_hpc <- function(data_dir, output_name, max_iter, learning_rate, num_
     "--output-dir", "output",
     "--num-workers", as.character(num_workers),
     "--max-iter", as.character(max_iter),
-    "--learning-rate", as.character(learning_rate),   # already batch-scaled
+    "--learning-rate", as.character(learning_rate),
     "--eval-period", as.character(eval_period),
     "--num-classes", as.character(num_classes),
     "--checkpoint-period", as.character(checkpoint_period),
@@ -324,27 +367,22 @@ train_model_hpc <- function(data_dir, output_name, max_iter, learning_rate, num_
     "--num-gpus", as.character(gpus)
   )
 
-  # Execute HPC workflow
-  target <- hpc_authenticate(hpc_host, hpc_user)
+  command <- paste("python src/train.py", paste(training_args, collapse = " "))
 
-  cli::cli_alert_info("Uploading data and submitting SLURM job...")
-  job_info <- hpc_sync_and_submit(
-    target,
-    data_dir,
-    hpc_base_dir,
-    output_name,
-    training_params,
-    gpus,
-    hpc_env,
-    hpc_cpus_per_task,
-    hpc_mem
+  # Execute complete workflow using hipergator
+  job <- hipergator::hpg_workflow(
+    uploads = list(
+      data = data_dir,
+      src = system.file("python", package = "petrographer")
+    ),
+    template = template,
+    command = command,
+    remote_base = fs::path(config$base_dir, output_name),
+    download_from = "output",
+    download_to = fs::path(local_output_dir, output_name),
+    verify_files = c("model_final.pth", "config.yaml")
   )
 
-
-  hpc_monitor(target, job_info$job_id, job_info$remote_base)
-
-  result <- hpc_download(target, job_info$remote_base, output_name, local_output_dir)
-
   cli::cli_alert_success("HPC training pipeline completed!")
-  return(result)
+  return(job$downloaded_to)
 }

@@ -12,6 +12,14 @@ library(tidyverse)
 library(fs)
 library(here)
 library(petrographer)
+library(hipergator)
+
+# Configure HPC settings once (optional - can still use .Renviron)
+hpg_configure(
+  host = "hpg",
+  user = Sys.getenv("USER"),
+  base_dir = "/blue/nicolas.gauthier/petrographer"
+)
 
 # Validate dataset
 validate_dataset(here::here("data/processed/background_removal"))
@@ -20,7 +28,7 @@ validate_dataset(here::here("data/processed/background_removal"))
 ## Training
 
 ```{r training}
-# Train model (HPC settings from .Renviron)
+# Train model - HPC settings configured above
 model_path <- train_model(
   data_dir = here::here("data/processed/background_removal"),
   output_name = "background_removal_v2",
