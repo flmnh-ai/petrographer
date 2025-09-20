@@ -9,7 +9,7 @@
 validate_dataset <- function(data_dir) {
   data_dir <- fs::path_abs(fs::path_norm(data_dir))
   train_dir <- fs::path(data_dir, "train")
-  val_dir <- fs::path(data_dir, "val")
+  val_dir <- fs::path(data_dir, "valid")
   train_ok <- fs::dir_exists(train_dir)
   val_ok <- fs::dir_exists(val_dir)
   train_anno <- fs::file_exists(fs::path(train_dir, "_annotations.coco.json"))
@@ -58,7 +58,7 @@ validate_dataset <- function(data_dir) {
 #' @export
 summarize_dataset <- function(data_dir) {
   data_dir <- fs::path_abs(fs::path_norm(data_dir))
-  dirs <- c("train", "val")
+  dirs <- c("train", "valid")
   out <- tibble::tibble(
     split = dirs,
     images = vapply(dirs, function(d) {

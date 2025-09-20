@@ -27,8 +27,13 @@ model_path <- train_model(
   data_dir = data_dir,
   output_name = "shell_inclusions_v1",
   num_classes = 3,
-  gpus = 3,
-  eval_period = 500
+  gpus = 1,
+  eval_period = 200,
+  ims_per_batch = 12,
+  num_workers = 10,
+  hpc_cpus_per_task = 16,
+  hpc_mem = "96gb",
+  max_iter = 4000
 )
 ```
 
@@ -83,6 +88,7 @@ val_images <- dir_ls(here(data_dir, "val"), glob = '*.jpg')
 test_image <- val_images[1]
 
 test_result <- predict_image(
+  use_slicing = FALSE,
   image_path = test_image,
   model = model,
   output_dir = here('results/inclusions_shell')

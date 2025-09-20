@@ -15,14 +15,6 @@ train_model_local(
   checkpoint_period,
   ims_per_batch,
   num_workers,
-  freeze_at,
-  optimizer,
-  weight_decay,
-  backbone_multiplier,
-  scheduler,
-  warmup_iters,
-  steps,
-  classwise,
   local_output_dir
 )
 }

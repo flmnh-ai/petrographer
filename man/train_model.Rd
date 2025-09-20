@@ -8,24 +8,14 @@ train_model(
   data_dir,
   output_name,
   num_classes,
-  max_iter = 2000,
-  learning_rate = 0.0025,
+  max_iter = 12000,
+  learning_rate = 5e-04,
   device = "cuda",
-  eval_period = 100,
+  eval_period = 1000,
   checkpoint_period = 0,
   ims_per_batch = NA,
   auto_scale_lr = TRUE,
   num_workers = NULL,
-  freeze_at = 2,
-  optimizer = c("SGD", "AdamW"),
-  weight_decay = NULL,
-  backbone_multiplier = 0.1,
-  scheduler = c("multistep", "cosine"),
-  warmup_frac = 0.1,
-  warmup_iters = NULL,
-  step_milestones_frac = c(0.75, 0.9),
-  step_milestones = NULL,
-  classwise = FALSE,
   hpc_env = NULL,
   hpc_cpus_per_task = NULL,
   hpc_mem = NULL,
@@ -41,55 +31,34 @@ train_model(
 )
 }
 \arguments{
-\item{data_dir}{Directory containing \verb{train/} and \verb{val/} subdirectories with COCO annotations.}
+\item{data_dir}{Directory containing \verb{train/} and \verb{valid/} subdirectories with COCO annotations.}
 
 \item{output_name}{Name for the trained model (used for artifact directories and pin names).}
 
-\item{num_classes}{Number of object classes.}
+\item{max_iter}{Maximum training iterations. Default: 12000.}
 
-\item{max_iter}{Maximum training iterations (default: 2000).}
+\item{learning_rate}{Base learning rate before auto-scaling by batch (default: 5e-4).
+Effective LR = learning_rate * (ims_per_batch / 16) when \code{auto_scale_lr = TRUE}.}
 
-\item{learning_rate}{Base learning rate before auto-scaling (default: 0.0025).}
+\item{device}{Device for local training: 'cpu', 'cuda', or 'mps' (default: 'cuda').}
 
-\item{device}{Device for local training: 'cpu', 'cuda', 'mps' (default: 'cuda').}
-
-\item{eval_period}{Validation evaluation frequency in iterations (default: 100).}
+\item{eval_period}{Validation evaluation frequency in iterations (default: 500).}
 
 \item{checkpoint_period}{Checkpoint saving frequency (0 = final only; > 0 = every N iters).}
 
-\item{ims_per_batch}{Total images per batch across all devices. If NA (default), uses 2 images per GPU.}
+\item{ims_per_batch}{Total images per iteration across all GPUs. If NA (default), uses 2 images per GPU.}
 
-\item{auto_scale_lr}{Automatically scale learning rate by number of GPUs (effective LR = learning_rate * gpus).}
+\item{auto_scale_lr}{If TRUE (default), scale LR linearly by global batch vs. reference batch 16.}
 
-\item{num_workers}{DataLoader workers per process/GPU. If NULL (default), set to per-GPU batch size.}
+\item{num_workers}{DataLoader workers per process (Detectron2). If NULL (default), set to images per GPU.}
 
-\item{freeze_at}{Backbone freeze level: 0 (none), 2 (default small-data), 3 (freeze more).}
+\item{hpc_env}{Character vector of SLURM script preamble lines (e.g., module loads). If NULL, none added.}
 
-\item{optimizer}{Optimizer to use: 'SGD' or 'AdamW' (default: 'SGD').}
+\item{hpc_cpus_per_task}{Optional SLURM cpus-per-task hint.}
 
-\item{weight_decay}{Weight decay (L2/AdamW). If NULL, default is 1e-4 for SGD and 0.05 for AdamW.}
+\item{hpc_mem}{Optional SLURM memory hint.}
 
-\item{backbone_multiplier}{LR multiplier applied to backbone params when unfrozen (default: 0.1).}
-
-\item{scheduler}{LR scheduler: 'multistep' (default) or 'cosine'.}
-
-\item{warmup_frac}{Fraction of max_iter used for warmup (default: 0.1). Ignored if warmup_iters provided.}
-
-\item{warmup_iters}{Explicit warmup iters. If NULL, computed from warmup_frac.}
-
-\item{step_milestones_frac}{Milestones as fractions of max_iter for multistep (default: c(0.75, 0.9)).}
-
-\item{step_milestones}{Explicit milestone iters vector (overrides fractions if provided).}
-
-\item{classwise}{Log per-class AP metrics during validation if supported (default: FALSE).}
-
-\item{hpc_env}{Character vector of SLURM script preamble lines (e.g., module loads). If NULL, no preamble is added.}
-
-\item{hpc_cpus_per_task}{Override CPUs requested for the SLURM task (maps to \verb{--cpus-per-task}). Default is 4 per GPU (\code{gpus × 4} when \code{gpus > 1}).}
-
-\item{hpc_mem}{Override memory (maps to \verb{--mem}), e.g., "96gb". Default is 24 GB per GPU.}
-
-\item{gpus}{Number of GPUs for HPC training (default: 1; ignored for local training).}
+\item{gpus}{Number of GPUs for HPC training (default: 1; ignored for local).}
 
 \item{hpc_host}{SSH hostname for HPC training (default: \code{PETROGRAPHER_HPC_HOST}; empty for local).}
 
@@ -112,6 +81,6 @@ Path to the trained model directory.
 }
 \description{
 Orchestrates local or HPC training using Detectron2. R computes batch size,
-workers, learning rate scaling, schedules, and passes final values to the
-Python trainer. Optionally publishes the resulting model to a pins board.
+workers, and a batch-scaled learning rate, then calls the Python trainer.
+Optionally publishes the resulting model to a pins board.
 }

@@ -14,19 +14,26 @@ library(fs)
 library(here)
 library(petrographer)
 
+data_dir <- here("data/processed/inclusions")
+
 # Validate dataset
-validate_dataset(here("data/processed/inclusions"))
+validate_dataset(data_dir)
 ```
 
 ## Training
 
 ```{r training}
-# Train model (HPC settings from .Renviron)
+# Train model
 model_path <- train_model(
-  data_dir = here("data/processed/inclusions"),
-  output_name = "inclusions_v2",
-  num_classes = 2,
-  max_iter = 3000  # extended training for inclusions
+  data_dir = data_dir,
+  output_name = "inclusions_v4",
+  ims_per_batch = 16,
+  num_workers = 16,
+  hpc_cpus_per_task = 20,
+  hpc_mem = "96gb",
+  eval_period = 500,
+  max_iter = 2000,
+  num_classes = 2
 )
 ```
 
@@ -74,15 +81,15 @@ model <- load_model(
 )
 
 # Test on validation sample
-val_images <- dir_ls(here('data/processed/inclusions/val'), 
+val_images <- dir_ls(here('data/processed/inclusions/valid'), 
                      glob = '*.jpg')
 
-test_image <- val_images[1]
+test_image <- val_images[2]
 
 test_result <- predict_image(
   image_path = test_image,
   model = model,
-  output_dir = here('results/inclusions_v2_test')
+  output_dir = here('results/inclusions_v3_test')
 )
 
 cat(sprintf("Test image: %s\n", path_file(test_image)))
@@ -90,465 +97,31 @@ cat(sprintf("Objects detected: %d\n", nrow(test_result)))
 cat(sprintf("Mean confidence: %.3f\n", mean(test_result$confidence)))
 ```
 
-```{r}
-library(cowplot)
-p1 <- ggplot(mtcars, aes(mpg, hp)) + geom_point()
-p2 <- draw_image("logo.png")
-plot_grid(p1, p2)
 
+```{r}
+library(magick)
 pred_image <- test_image |>
   path_file() |>
   path_ext_remove() |>
   paste0('_prediction.png')
 
-p1 <- draw_image(test_image)
-p2 <- draw_image(here('results/inclusions_v2_test', pred_image))
-
-plot_grid(p1, p2)
-
-library(imager)
-library(cowplot)
-
-img1 <- load.image(test_image)
-img2 <- load.image(here('results/inclusions_v2_test', pred_image))
-library(patchwork)
-img1 + img2
-plot_grid(plot(img1, axes=FALSE), plot(img2, axes=FALSE), ncol=2)
-
-library(imagecompare)
-
-compare_images("image1.png", "image2.png")
-library(slideview)
-t1 <- here('results/inclusions_v2_test', pred_image)
-slideView(t1, t1)
-
-compare_swipe <- function(before_png, after_png, thumb = 36) {
-  library(terra); library(leaflet); library(leaflet.extras2)
-  r1 <- rast(before_png); r2 <- rast(after_png)
-  ext(r1) <- ext(0, 1, 0, 1); ext(r2) <- ext(0, 1, 0, 1)
-  leaflet(options = leafletOptions(crs = leafletCRS(crsClass = "L.CRS.Simple"))) |>
-    addRasterImage(r1, project = FALSE, layerId = "left",  opacity = 1) |>
-    addRasterImage(r2, project = FALSE, layerId = "right", opacity = 1) |>
-    addSidebyside("left", "right", options = list(thumbSize = thumb)) |>
-    fitBounds(0, 0, 1, 1)
-}
-
-
-compare_swipe(t1, t1)
+image_read(test_image) |> plot()
+here('results/inclusions_v3_test', pred_image) |>
+  image_read() |>
+  plot()
 ```
-
 ```{r}
-# install.packages(c("htmltools","base64enc","jsonlite","leaflet","png"))
+test_image <- here('data/lyons_annotations/img') |>
+dir_ls()
 
-compare_swipe <- function(
-  before_png,
-  after_png,
-  label1 = "Before",
-  label2 = "After",
-  start = 50,                 # starting split % for juxtapose
-  width = "100%",             # CSS width
-  height = "420px",           # CSS height
-  engine = c("juxtapose","leaflet")
-) {
-  stopifnot(file.exists(before_png), file.exists(after_png))
-  engine <- match.arg(engine)
-
-  if (engine == "juxtapose") {
-    # --- JuxtaposeJS (super light, no leaflet/CRS) ---
-    library(htmltools); library(base64enc)
-    to_data_uri <- function(path) dataURI(file = path, mime = "image/png")
-
-    dep <- htmlDependency(
-      name = "juxtaposejs",
-      version = "1.2.0",
-      src = c(href = "https://cdn.knightlab.com/libs/juxtapose/latest"),
-      script = "js/juxtapose.min.js",
-      stylesheet = "css/juxtapose.css"
-    )
-
-    tagList(
-      dep,
-      tags$div(style = paste0("max-width:", width, "; height:", height, ";"),
-        tags$div(
-          class = "juxtapose",
-          `data-startingposition` = paste0(start, "%"),
-          `data-showlabels` = "true",
-          `data-label`  = label1,
-          `data-label2` = label2,
-          tags$img(src = to_data_uri(before_png), alt = label1),
-          tags$img(src = to_data_uri(after_png),  alt = label2)
-        )
-      )
-    )
-
-  } else {
-    # --- Leaflet (no rasters, no CRS headaches; uses ImageOverlay + side-by-side) ---
-    # deps: leaflet + htmltools + base64enc + jsonlite + png
-    library(leaflet); library(htmltools); library(base64enc); library(jsonlite); library(png)
-
-    # read dimensions to preserve aspect ratio
-    dim_png <- function(p) { d <- dim(readPNG(p)); list(h = d[1], w = d[2]) }
-    d1 <- dim_png(before_png)
-    # use the first image's size for the canvas (assumes both same size)
-    H <- d1$h; W <- d1$w
-
-    b64_before <- dataURI(file = before_png, mime = "image/png")
-    b64_after  <- dataURI(file = after_png,  mime = "image/png")
-
-    # Leaflet SideBySide control via CDN (keeps it light; no extra R packages)
-    dep_sidebyside <- htmlDependency(
-      name = "leaflet-side-by-side",
-      version = "2.0.1",
-      src = c(href = "https://unpkg.com/leaflet-side-by-side@2.0.1/dist"),
-      script = "leaflet-side-by-side.min.js",
-      stylesheet = NULL
-    )
-
-    bounds_js <- sprintf("[[0,0],[%d,%d]]", H, W)
-
-    b64_before_json <- toJSON(b64_before, auto_unbox = TRUE)
-    b64_after_json  <- toJSON(b64_after,  auto_unbox = TRUE)
-
-    browsable(
-      attachDependencies(
-        leaflet(options = leafletOptions(crs = leafletCRS(crsClass = "L.CRS.Simple"))) |>
-          htmlwidgets::onRender(sprintf(
-'function(el, x) {
-  var map = this;
-  var b64_before = %s;
-  var b64_after  = %s;
-  var bounds = %s;
-
-  var left  = L.imageOverlay(b64_before, bounds).addTo(map);
-  var right = L.imageOverlay(b64_after,  bounds).addTo(map);
-
-  // Create labels
-  var container = L.DomUtil.create("div", "swipe-labels");
-  container.style.position = "absolute";
-  container.style.top = "8px";
-  container.style.left = "8px";
-  container.style.zIndex = 1000;
-  container.style.pointerEvents = "none";
-  var l1 = L.DomUtil.create("div", "", container);
-  var l2 = L.DomUtil.create("div", "", container);
-  l1.innerHTML = %s;
-  l2.innerHTML = %s;
-  l1.style.background = "rgba(0,0,0,0.5)";
-  l2.style.background = "rgba(0,0,0,0.5)";
-  l1.style.color = l2.style.color = "white";
-  l1.style.padding = l2.style.padding = "2px 6px";
-  l1.style.marginRight = "6px";
-  l2.style.position = "absolute";
-  l2.style.right = "8px";
-  l2.style.top = "0px";
-  map.getContainer().appendChild(container);
-
-  // Add the side-by-side slider
-  L.control.sideBySide(left, right).addTo(map);
-  map.fitBounds(bounds);
-}', b64_before_json, b64_after_json, bounds_js,
-   toJSON(label1, auto_unbox = TRUE), toJSON(label2, auto_unbox = TRUE))),
-        list(dep_sidebyside)
-      )
-    )
-  }
-}
-
-compare_swipe(
-  t1,
-  t1,
-  label1 = "Pred v1", label2 = "Pred v2", start = 45
+test_result <- predict_image(
+  image_path = test_image[[6]],
+  model = model,
+  slice_size = 1024,
+  output_dir = here('results/inclusions_v3_test')
 )
-
-# Leaflet engine (if you prefer a map-like widget; still no CRS/reprojection)
-compare_swipe(
-  t1,
-  t1,
-  engine = "leaflet",
-  label1 = "Before", label2 = "After"
-)
-
-# install.packages(c("htmltools","base64enc"))
-
-compare_swipe_juxta <- function(
-  before_png, after_png,
-  label1 = "Before", label2 = "After",
-  start = 50,           # starting split %
-  width = "100%",       # CSS width
-  height = "420px"      # CSS height
-) {
-  stopifnot(file.exists(before_png), file.exists(after_png))
-  library(htmltools); library(base64enc)
-
-  b64_before <- dataURI(file = before_png, mime = "image/png")
-  b64_after  <- dataURI(file = after_png,  mime = "image/png")
-  id <- paste0("jx-", as.integer(runif(1, 1e8, 1e9)))
-
-  dep <- htmlDependency(
-    name = "juxtaposejs",
-    version = "1.2.0",
-    src = c(href = "https://cdn.knightlab.com/libs/juxtapose/latest"),
-    script = "js/juxtapose.min.js",
-    stylesheet = "css/juxtapose.css"
-  )
-
-  html <- tags$div(
-    id = id,
-    style = paste0("max-width:", width, "; height:", height, ";")
-  )
-
-  init <- tags$script(HTML(sprintf(
-    "(function(){
-       function init(){
-         var el = document.getElementById(%s);
-         if(!el || !window.juxtapose || !juxtapose.JXSlider){ setTimeout(init, 50); return; }
-         new juxtapose.JXSlider('#'+%s, [
-           {src: %s, label: %s},
-           {src: %s, label: %s}
-         ], {
-           startingPosition: '%s%%',
-           showLabels: true,
-           showCredits: false,
-           animate: true,
-           mode: 'horizontal'
-         });
-       }
-       init();
-     })();",
-    jsonlite::toJSON(id), jsonlite::toJSON(id),
-    jsonlite::toJSON(b64_before), jsonlite::toJSON(label1),
-    jsonlite::toJSON(b64_after),  jsonlite::toJSON(label2),
-    as.integer(start)
-  )))
-
-  attachDependencies(tagList(html, init), dep)
-}
-compare_swipe_juxta(t1, t1, label1 = "Pred v1", label2 = "Pred v2", start = 45)
-
 ```
 
-```{r}
-# install.packages(c("htmltools","base64enc","png"))
-
-compare_swipe_inline <- function(
-  before_png,
-  after_png,
-  label1 = "Before",
-  label2 = "After",
-  height = 420,            # pixel height of the widget box
-  start = 50               # starting split percentage (0..100)
-) {
-  stopifnot(file.exists(before_png), file.exists(after_png))
-  if (start < 0 || start > 100) start <- 50
-
-  library(htmltools)
-  library(base64enc)
-  library(png)
-
-  # Read dims to help users debug size mismatches (we’ll still render if different)
-  d1 <- try(dim(readPNG(before_png)), silent = TRUE)
-  d2 <- try(dim(readPNG(after_png)),  silent = TRUE)
-
-  # Base64 data URIs (PNG only)
-  b64_before <- dataURI(file = before_png, mime = "image/png")
-  b64_after  <- dataURI(file = after_png,  mime = "image/png")
-
-  id <- paste0("csw-", as.integer(runif(1, 1e8, 1e9)))
-
-  css <- tags$style(HTML(sprintf(
-"
-#%s { position: relative; width: 100%%; height: %dpx; background: #111; overflow: hidden; border-radius: 6px; }
-#%s .csw-img { position: absolute; inset: 0; width: 100%%; height: 100%%; object-fit: contain; image-rendering: auto; }
-#%s .csw-topwrap { position: absolute; inset: 0; overflow: hidden; width: %d%%; }
-#%s .csw-slider { position: absolute; left: 50%%; top: 0; bottom: 0; width: 2px; background: rgba(255,255,255,0.85); transform: translateX(-1px); pointer-events: none; }
-#%s .csw-ui { position: absolute; left: 50%%; bottom: 10px; width: 60%%; max-width: 480px; transform: translateX(-50%%); z-index: 10; }
-#%s input[type=range] { width: 100%%; -webkit-appearance: none; background: transparent; }
-#%s input[type=range]::-webkit-slider-runnable-track { height: 4px; background: rgba(255,255,255,0.6); border-radius: 2px; }
-#%s input[type=range]::-moz-range-track { height: 4px; background: rgba(255,255,255,0.6); border-radius: 2px; }
-#%s input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%%; background: #fff; margin-top: -6px; box-shadow: 0 0 0 2px rgba(0,0,0,0.2); }
-#%s input[type=range]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%%; background: #fff; border: none; }
-#%s .csw-label { position: absolute; top: 8px; padding: 2px 8px; background: rgba(0,0,0,0.55); color: #fff; font: 12px/1.2 system-ui, sans-serif; border-radius: 4px; pointer-events: none; }
-#%s .csw-label.left  { left: 8px; }
-#%s .csw-label.right { right: 8px; }
-", id, as.integer(height),
-   id, id, as.integer(start),
-   id, id, id, id, id, id, id, id, id, id
-)))
-
-  html <- tags$div(
-    id = id,
-    # Base image (right)
-    tags$img(src = b64_after, class = "csw-img"),
-    # Top image (left) wrapped so we can shrink width
-    tags$div(class = "csw-topwrap",
-      tags$img(src = b64_before, class = "csw-img")
-    ),
-    # Vertical slider line
-    tags$div(class = "csw-slider"),
-    # Labels
-    tags$div(class = "csw-label left",  label1),
-    tags$div(class = "csw-label right", label2),
-    # Range UI
-    tags$div(class = "csw-ui",
-      tags$input(type = "range", min = "0", max = "100", value = as.character(start), step = "1",
-                 oninput = sprintf("
-                   (function(el){
-                     var root = document.getElementById('%s');
-                     if(!root) return;
-                     var topwrap = root.querySelector('.csw-topwrap');
-                     var slider  = root.querySelector('.csw-slider');
-                     var val = parseInt(el.value,10) || 0;
-                     topwrap.style.width = val + '%%';
-                     slider.style.left = val + '%%';
-                   })(this);
-                 ", id)
-      )
-    )
-  )
-
-  # Initialize positions on load (for some notebook viewers)
-  js_init <- tags$script(HTML(sprintf(
-"
-(function(){
-  var root = document.getElementById('%s'); if(!root) return;
-  var rng = root.querySelector('input[type=range]'); if(!rng) return;
-  var evt = new Event('input', { bubbles: true });
-  rng.dispatchEvent(evt);
-})();
-", id)))
-
-  browsable(tagList(css, html, js_init))
-}
-
-compare_swipe_inline(t1, t1,
-  label1 = "Pred v1", label2 = "Pred v2",
-  height = 420, start = 45
-)
-
-side_by_side <- function(left_png, right_png, height = 360, gap = 8) {
-  library(htmltools); library(base64enc)
-  l <- dataURI(file = left_png,  mime = "image/png")
-  r <- dataURI(file = right_png, mime = "image/png")
-  browsable(
-    tags$div(style = sprintf("display:flex; gap:%dpx; height:%dpx;", gap, as.integer(height)),
-      tags$img(src = l, style = "height:100%; object-fit:contain; flex:1; background:#111; border-radius:6px;"),
-      tags$img(src = r, style = "height:100%; object-fit:contain; flex:1; background:#111; border-radius:6px;")
-    )
-  )
-}
-
-side_by_side(t1, t1, height = 360, gap = 12)
-```
-
-```{r}
-#| echo: false
-image_slider <- function(before, after, width = 800, id = NULL) {
-  if (is.null(id)) id <- paste0("s", sample(10000:99999, 1))
-  
-  html <- sprintf('
-<div class="img-compare" id="%s" style="max-width:%dpx;position:relative;margin:20px auto;overflow:hidden;border-radius:8px;box-shadow:0 4px 6px rgba(0,0,0,0.1)">
-  <img src="%s" style="display:block;width:100%%;height:auto">
-  <div class="after" style="position:absolute;top:0;left:0;width:50%%;height:100%%;overflow:hidden">
-    <img src="%s" style="position:absolute;top:0;left:0;width:100%%;height:auto">
-  </div>
-  <div class="handle" style="position:absolute;top:0;left:50%%;width:4px;height:100%%;background:white;cursor:ew-resize;transform:translateX(-50%%)">
-    <span style="position:absolute;top:50%%;left:50%%;transform:translate(-50%%,-50%%);background:white;padding:5px 10px;border-radius:20px;font-size:12px">◀ ▶</span>
-  </div>
-</div>
-<script>
-{
-  const s = document.getElementById("%s");
-  const h = s.querySelector(".handle");
-  const a = s.querySelector(".after");
-  let d = false;
-  function u(e) {
-    if (!d && e.type !== "click") return;
-    const r = s.getBoundingClientRect();
-    const x = e.clientX || e.touches[0].clientX;
-    let p = ((x - r.left) / r.width) * 100;
-    p = Math.max(0, Math.min(100, p));
-    h.style.left = p + "%%";
-    a.style.width = p + "%%";
-  }
-  h.addEventListener("mousedown", () => d = true);
-  document.addEventListener("mouseup", () => d = false);
-  document.addEventListener("mousemove", u);
-  s.addEventListener("click", u);
-}
-</script>', id, width, before, after, id)
-  
-  knitr::raw_html(html)
-}
-image_slider(
-  before = "https://picsum.photos/800/533?random=3",
-  after = "https://picsum.photos/800/533?random=4",
-  width = 700
-)
-image_slider(t1, t1, width = 800)
-```
-
-```{r}
-<style>
-.css-compare {
-  position: relative;
-  width: 100%;
-  max-width: 800px;
-  margin: 20px auto;
-}
-.css-compare input[type="range"] {
-  position: absolute;
-  top: 50%;
-  left: 0;
-  width: 100%;
-  transform: translateY(-50%);
-  background: transparent;
-  -webkit-appearance: none;
-  z-index: 2;
-  cursor: ew-resize;
-}
-.css-compare input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 40px;
-  height: 40px;
-  background: white;
-  border-radius: 50%;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.3);
-}
-.css-compare .images {
-  position: relative;
-  overflow: hidden;
-  border-radius: 8px;
-}
-.css-compare img {
-  display: block;
-  width: 100%;
-}
-.css-compare .after {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 50%;
-  height: 100%;
-  overflow: hidden;
-}
-.css-compare .after img {
-  position: absolute;
-  top: 0;
-  left: 0;
-}
-</style>
-
-<div class="css-compare">
-  <input type="range" min="0" max="100" value="50" 
-         oninput="this.nextElementSibling.querySelector('.after').style.width=this.value+'%'">
-  <div class="images">
-    <img src="https://picsum.photos/800/533?random=5">
-    <div class="after" style="width:50%">
-      <img src="https://picsum.photos/800/533?random=6">
-    </div>
-  </div>
-</div>
-```
 
 ## Summary
 
