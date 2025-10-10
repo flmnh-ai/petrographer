@@ -7,19 +7,21 @@
 load_model(
   model_path = NULL,
   config_path = NULL,
-  confidence = 0.5,
+  confidence = 0.3,
   device = "cpu",
   model_name = NULL,
   version = NULL,
-  board = NULL
+  board = NULL,
+  use_best = TRUE
 )
 }
 \arguments{
-\item{model_path}{Path to trained model weights (ignored if \code{model_name} is supplied or \code{model_path} appears to be a pin name).}
+\item{model_path}{Path to trained model weights (ignored if \code{model_name} is supplied or \code{model_path} appears to be a pin name).
+If a directory path is provided, will look for \code{model_best.pth} (if \code{use_best = TRUE}) or \code{model_final.pth}.}
 
 \item{config_path}{Path to model config (ignored if loading from a pin).}
 
-\item{confidence}{Confidence threshold (default: 0.5).}
+\item{confidence}{Confidence threshold (default: 0.3).}
 
 \item{device}{Device to use: 'cpu', 'cuda', 'mps' (default: 'cpu').}
 
@@ -28,6 +30,9 @@ load_model(
 \item{version}{Specific version to load when using pins (NULL for latest).}
 
 \item{board}{Optional pins board (defaults to \code{\link[=pg_board]{pg_board()}}).}
+
+\item{use_best}{If TRUE (default), load \code{model_best.pth} when available instead of \code{model_final.pth}.
+The best model is selected by BestCheckpointer during training based on validation segm/AP.}
 }
 \value{
 A \code{PetrographyModel} object.
