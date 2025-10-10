@@ -12,6 +12,13 @@ library(tidyverse)
 library(fs)
 library(here)
 library(petrographer)
+library(hipergator)
+
+# Configure HPC settings once (optional - can still use .Renviron)
+hpg_configure(
+  host = "hpg",
+  base_dir = "/blue/nicolas.gauthier/nicolas.gauthier/petrographer"
+)
 
 # Validate dataset
 validate_dataset(here::here("data/processed/shell_mixed"))

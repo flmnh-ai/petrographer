@@ -12,6 +12,13 @@ library(tidyverse)
 library(fs)
 library(here)
 library(petrographer)
+library(hipergator)
+
+# Configure HPC settings once
+hpg_configure(
+  host = "hpg",
+  base_dir = "/blue/nicolas.gauthier/nicolas.gauthier/petrographer"
+)
 
 data_dir <- here("data/processed/inclusion_shell")
 
