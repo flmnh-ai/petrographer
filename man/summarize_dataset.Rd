@@ -7,7 +7,7 @@
 summarize_dataset(data_dir)
 }
 \arguments{
-\item{data_dir}{Directory containing 'train' and 'val'}
+\item{data_dir}{Directory containing 'train' and 'valid'}
 }
 \value{
 A tibble with counts for train and val
