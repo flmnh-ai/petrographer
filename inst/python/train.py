@@ -100,6 +100,12 @@ def setup_cfg(args):
     cfg.MODEL.RPN.POST_NMS_TOPK_TEST = 1500       # default: 1000
     cfg.TEST.DETECTIONS_PER_IMAGE = 500           # default: 100
 
+    # Keep scale close to 1k px tiles
+    cfg.INPUT.MIN_SIZE_TRAIN = (928, 960, 1024)
+    cfg.INPUT.MAX_SIZE_TRAIN = 1024
+    cfg.INPUT.MIN_SIZE_TEST = 1024
+    cfg.INPUT.MAX_SIZE_TEST = 1024
+
     # Optional overrides from command line
     if args.opts:
         cfg.merge_from_list(args.opts)
@@ -115,8 +121,7 @@ def setup_cfg(args):
 def build_augmentations(cfg):
     """Augmentations: flips + color jitter"""
     return [
-        T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-        T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
+        T.RandomFlip(prob=0.5, horizontal=True, vertical=True),
         T.RandomRotation(angle=[0, 90, 180, 270], sample_style="choice", expand=False),
         T.RandomBrightness(0.8, 1.2),  # ±20% brightness
         T.RandomContrast(0.8, 1.2),    # ±20% contrast
