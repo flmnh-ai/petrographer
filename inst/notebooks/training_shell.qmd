@@ -17,8 +17,7 @@ library(hipergator)
 # Configure HPC settings once (optional - can still use .Renviron)
 hpg_configure(
   host = "hpg",
-  user = Sys.getenv("USER"),
-  base_dir = "/blue/nicolas.gauthier/petrographer"
+  base_dir = "/blue/nicolas.gauthier/nicolas.gauthier/petrographer"
 )
 
 # Validate dataset

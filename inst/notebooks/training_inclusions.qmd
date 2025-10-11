@@ -12,6 +12,7 @@ library(tidyverse)
 library(magick)
 library(fs)
 library(here)
+library(hipergator)
 library(petrographer)
 library(hipergator)
 
@@ -22,7 +23,13 @@ hpg_configure(
   base_dir = "/blue/nicolas.gauthier/petrographer"
 )
 
-data_dir <- here("data/processed/inclusions")
+# Configure HPC settings once
+hpg_configure(
+  host = "hpg",
+  base_dir = "/blue/nicolas.gauthier/nicolas.gauthier/petrographer"
+)
+
+data_dir <- here("data/processed/inclusions_sliced")
 
 # Validate dataset
 validate_dataset(data_dir)
@@ -34,15 +41,86 @@ validate_dataset(data_dir)
 # Train model - HPC settings configured above
 model_path <- train_model(
   data_dir = data_dir,
-  output_name = "inclusions_v4",
+  output_name = "inclusions",
   ims_per_batch = 16,
   num_workers = 16,
-  hpc_cpus_per_task = 20,
+  hpc_cpus_per_task = 18,
   hpc_mem = "96gb",
-  eval_period = 500,
+  eval_period = 200,
   max_iter = 2000,
-  num_classes = 2
+  num_classes = 1,
+  freeze_at = 2,
+  learning_rate = 1e-3
 )
+```
+
+## Annotation Diagnostics
+
+```{r annotation-diagnostics}
+# Diagnose training and validation annotations
+train_diag <- diagnose_annotations(
+  annotation_json = path(data_dir, "train/_annotations.coco.json"),
+  image_dir = path(data_dir, "train")
+)
+
+val_diag <- diagnose_annotations(
+  annotation_json = path(data_dir, "valid/_annotations.coco.json"),
+  image_dir = path(data_dir, "valid")
+)
+```
+
+```{r annotation-plots}
+# Plot distribution of annotations per image
+library(ggplot2)
+
+train_anno_dist <- tibble(
+  count = train_diag$annos_per_image,
+  split = "train"
+)
+
+val_anno_dist <- tibble(
+  count = val_diag$annos_per_image,
+  split = "valid"
+)
+
+bind_rows(train_anno_dist, val_anno_dist) %>%
+  ggplot(aes(x = count, fill = split)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = 100, linetype = "dashed", color = "red") +
+  annotate("text", x = 100, y = Inf, label = "Default maxDets=100",
+           vjust = 1.5, hjust = -0.1, color = "red", size = 3) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Annotations per Image Distribution",
+    subtitle = "Red line shows default COCO evaluation limit (100 detections)",
+    x = "Number of annotations",
+    y = "Number of images",
+    fill = "Split"
+  ) +
+  theme_minimal()
+
+# Object size distribution
+train_size_dist <- tibble(
+  area = train_diag$bbox_areas,
+  split = "train"
+)
+
+val_size_dist <- tibble(
+  area = val_diag$bbox_areas,
+  split = "valid"
+)
+
+bind_rows(train_size_dist, val_size_dist) %>%
+  ggplot(aes(x = log10(area), fill = split)) +
+  geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Object Size Distribution",
+    x = "log10(Area) in pixels²",
+    y = "Count",
+    fill = "Split"
+  ) +
+  theme_minimal()
 ```
 
 ## Evaluation
@@ -77,26 +155,144 @@ eval_result$validation_data |>
     theme_minimal()
 ```
 
-## Model Testing
+## SAHI COCO Evaluation
 
-```{r testing}
-cat("\n== Testing Model ==\n")
+Evaluate the model on the validation set using SAHI inference and compute COCO metrics.
 
+```{r sahi-eval}
 # Load trained model
 model <- load_model(
   model_path = path(model_path, "model_final.pth"),
   config_path = path(model_path, "config.yaml")
 )
 
+# Run SAHI evaluation on validation set
+val_annotation_json <- path(data_dir, "valid/_annotations.coco.json")
+val_image_dir <- path(data_dir, "valid")
+
+sahi_eval <- evaluate_model_sahi(
+  model = model,
+  annotation_json = val_annotation_json,
+  image_dir = val_image_dir,
+  use_slicing = FALSE,
+  slice_size = 640,
+  max_dets = 300,
+  overlap = 0.2
+)
+
+# Display COCO metrics
+cat("\n== COCO Evaluation Metrics (SAHI) ==\n")
+print(sahi_eval$summary, n = Inf)
+
+# Save predictions for later analysis
+sahi_pred_path <- path(eval_result$output_dir, "sahi_validation_predictions.csv")
+readr::write_csv(sahi_eval$predictions, sahi_pred_path)
+cat(sprintf("\nSaved %d predictions to: %s\n", nrow(sahi_eval$predictions), sahi_pred_path))
+```
+
+```{r detection-analysis}
+# Compare predictions per image vs ground truth
+gt_anno <- jsonlite::read_json(val_annotation_json)
+gt_per_image <- table(map_int(gt_anno$annotations, "image_id"))
+
+pred_per_image <- sahi_eval$predictions %>%
+  count(image_id, name = "n_predictions")
+
+# Join with ground truth
+comparison <- tibble(
+  image_id = as.integer(names(gt_per_image)),
+  n_gt = as.numeric(gt_per_image)
+) %>%
+  left_join(pred_per_image, by = "image_id") %>%
+  mutate(
+    n_predictions = replace_na(n_predictions, 0),
+    recall_estimate = n_predictions / n_gt,
+    missing = n_gt - n_predictions
+  )
+
+cat("\n== Detection Coverage Summary ==\n")
+cat(sprintf("Mean GT objects per image: %.1f\n", mean(comparison$n_gt)))
+cat(sprintf("Mean predictions per image: %.1f\n", mean(comparison$n_predictions)))
+cat(sprintf("Mean recall estimate: %.1f%%\n", 100 * mean(comparison$recall_estimate)))
+cat(sprintf("Images with >100 GT objects: %d (%.1f%%)\n",
+            sum(comparison$n_gt > 100), 100 * mean(comparison$n_gt > 100)))
+cat(sprintf("Images with >100 predictions: %d (%.1f%%)\n",
+            sum(comparison$n_predictions > 100), 100 * mean(comparison$n_predictions > 100)))
+
+# Show images with highest detection deficit
+cat("\n== Images with Most Missing Detections ==\n")
+comparison %>%
+  arrange(desc(missing)) %>%
+  head(10) %>%
+  select(image_id, n_gt, n_predictions, recall_estimate, missing) %>%
+  print()
+```
+
+```{r detection-coverage-plot}
+# Plot predictions vs ground truth
+comparison %>%
+  ggplot(aes(x = n_gt, y = n_predictions)) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "steelblue") +
+  labs(
+    title = "Predictions vs Ground Truth Annotations",
+    subtitle = "Points below line = under-detection; above line = may indicate missing GT",
+    x = "Ground Truth Annotations",
+    y = "Model Predictions"
+  ) +
+  theme_minimal()
+
+# Histogram of recall per image
+comparison %>%
+  ggplot(aes(x = recall_estimate)) +
+  geom_histogram(bins = 30, fill = "steelblue", alpha = 0.7) +
+  geom_vline(xintercept = 1, linetype = "dashed", color = "red") +
+  labs(
+    title = "Per-Image Recall Distribution",
+    subtitle = "Values >1 suggest potential missing ground truth annotations",
+    x = "Predictions / Ground Truth",
+    y = "Number of images"
+  ) +
+  theme_minimal()
+```
+
+```{r sahi-metrics-plot}
+# Plot COCO metrics (note: AR@300 for dense detection)
+key_metrics <- c("AP", "AP50", "AP75", "AR@300")
+sahi_eval$summary |>
+  filter(metric %in% key_metrics) |>
+  mutate(metric = factor(metric, levels = key_metrics)) |>
+  ggplot(aes(x = metric, y = value)) +
+  geom_col(fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.3f", value)), vjust = -0.5, size = 3) +
+  ylim(0, 1) +
+  labs(
+    title = "SAHI COCO Evaluation Metrics (Dense Detection)",
+    subtitle = sprintf("%d images, %d detections (maxDets=300)",
+                       length(unique(sahi_eval$predictions$image_id)),
+                       nrow(sahi_eval$predictions)),
+    x = "Metric",
+    y = "Value"
+  ) +
+  theme_minimal()
+```
+
+## Model Testing
+
+```{r testing}
+cat("\n== Testing Model ==\n")
+
 # Test on validation sample
-val_images <- dir_ls(here('data/processed/inclusions/valid'), 
+test_images <- dir_ls(here('data/processed/inclusions_sliced/valid'),
                      glob = '*.jpg')
 
-test_image <- val_images[2]
+test_image <- test_images[4]
 
 test_result <- predict_image(
   image_path = test_image,
   model = model,
+  use_slicing = FALSE,
   output_dir = here('results/inclusions_v3_test')
 )
 
@@ -128,9 +324,18 @@ test_result <- predict_image(
   slice_size = 1024,
   output_dir = here('results/inclusions_v3_test')
 )
+
+pred_image <- test_image[[6]] |>
+  path_file() |>
+  path_ext_remove() |>
+  paste0('_prediction.png')
+'../notebooks/results/
+here('results/inclusions_v3_test/) |>
+  image_read() |>
+  plot()
 ```
 
-
+I need to slice the trianing data!
 ## Summary
 
 ```{r summary}

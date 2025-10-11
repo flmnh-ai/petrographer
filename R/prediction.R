@@ -124,6 +124,7 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
   # Extract all predictions from batch result
   all_predictions <- list()
 
+  cli::cli_progress_bar("Processing predictions", total = length(result$object_prediction_list))
   for (i in seq_along(result$object_prediction_list)) {
     pred_result <- result$object_prediction_list[[i]]
     image_path <- pred_result$image$file_name
@@ -136,7 +137,9 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
       morph_data <- calculate_morphology_from_result(temp_result, image_path)
       all_predictions[[length(all_predictions) + 1]] <- morph_data
     }
+    cli::cli_progress_update()
   }
+  cli::cli_progress_done()
 
   # Combine all results
   if (length(all_predictions) > 0) {
@@ -147,6 +150,202 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
   } else {
     return(tibble::tibble())
   }
+}
+
+#' Evaluate detections with SAHI and COCO metrics
+#'
+#' Runs SAHI inference across the validation set described by a COCO-style
+#' annotation file and computes COCO metrics using `pycocotools`. The function
+#' returns a tidy summary of the standard 12 bbox metrics alongside the raw
+#' prediction table for further analysis.
+#'
+#' @param model A `PetrographyModel` from [load_model()].
+#' @param annotation_json Path to COCO annotation JSON (e.g. `valid/_annotations.coco.json`).
+#' @param image_dir Directory containing the images referenced in the
+#'   annotation file. If `NULL`, image paths are resolved relative to the
+#'   annotation file.
+#' @param use_slicing Whether to use SAHI sliced inference (default `TRUE`).
+#' @param slice_size Slice size for SAHI inference (pixels, default 512).
+#' @param overlap Overlap ratio between slices (default 0.2).
+#' @param max_images Optional maximum number of images to evaluate (useful for
+#'   smoke tests).
+#' @param save_predictions Optional path to write COCO-format predictions JSON.
+#' @param iou_type IoU type to evaluate (`"bbox"` by default).
+#' @param max_dets Maximum detections per image for evaluation. For dense detection
+#'   (100+ objects), set to 300 or higher (default: 100).
+#' @return A list with elements `summary` (tibble of COCO metrics),
+#'   `predictions` (tibble of detections), and `coco_eval` (pycocotools object).
+#' @export
+evaluate_model_sahi <- function(model,
+                                annotation_json,
+                                image_dir = NULL,
+                                use_slicing = TRUE,
+                                slice_size = 512,
+                                overlap = 0.2,
+                                max_images = NULL,
+                                save_predictions = NULL,
+                                iou_type = "bbox",
+                                max_dets = 100) {
+
+  if (!inherits(model, "PetrographyModel")) {
+    cli::cli_abort("model must be a PetrographyModel object from load_model().")
+  }
+  if (!fs::file_exists(annotation_json)) {
+    cli::cli_abort("Annotation file not found: {.path {annotation_json}}")
+  }
+
+  # Load COCO metadata
+  coco_mod <- reticulate::import("pycocotools.coco", convert = FALSE)
+  coco_eval_mod <- reticulate::import("pycocotools.cocoeval", convert = FALSE)
+
+  coco_gt <- coco_mod$COCO(annotation_json)
+  images_info <- reticulate::py_to_r(coco_gt$dataset$images)
+
+  images_df <- tibble::tibble(
+    image_id = purrr::map_int(images_info, ~ .x$id),
+    file_name = purrr::map_chr(images_info, ~ .x$file_name)
+  )
+
+  base_dir <- if (!is.null(image_dir)) {
+    image_dir
+  } else {
+    fs::path_dir(annotation_json)
+  }
+
+  images_df <- images_df |>
+    dplyr::mutate(full_path = fs::path(base_dir, file_name))
+
+  missing_files <- images_df |> dplyr::filter(!fs::file_exists(full_path))
+  if (nrow(missing_files) > 0) {
+    cli::cli_abort(c(
+      "Image files referenced in annotations were not found",
+      paste0("- ", missing_files$file_name)
+    ))
+  }
+
+  if (!is.null(max_images) && max_images < nrow(images_df)) {
+    images_df <- dplyr::slice_head(images_df, n = max_images)
+  }
+
+  results_list <- list()
+  detections_rows <- list()
+
+  cli::cli_progress_bar("Evaluating images", total = nrow(images_df))
+  for (idx in seq_len(nrow(images_df))) {
+    img_row <- images_df[idx, ]
+    img_path <- img_row$full_path
+
+    if (use_slicing) {
+      pred <- sahi$predict$get_sliced_prediction(
+        image = img_path,
+        detection_model = model$sahi_model,
+        slice_height = as.integer(slice_size),
+        slice_width = as.integer(slice_size),
+        overlap_height_ratio = overlap,
+        overlap_width_ratio = overlap
+      )
+    } else {
+      pred <- sahi$predict$get_prediction(
+        image = img_path,
+        detection_model = model$sahi_model
+      )
+    }
+
+    cli::cli_progress_update()
+
+    if (length(pred$object_prediction_list) == 0) {
+      next
+    }
+
+    preds <- pred$object_prediction_list
+    for (obj in preds) {
+      mask <- obj$mask$bool_mask
+      labeled_mask <- skimage$measure$label(mask)
+      storage.mode(labeled_mask) <- "integer"
+      props <- skimage$measure$regionprops(labeled_mask)
+      if (length(props) == 0) {
+        next
+      }
+      prop <- props[[1]]
+      bbox <- prop$bbox  # (min_row, min_col, max_row, max_col)
+      min_row <- as.numeric(bbox[[1]])
+      min_col <- as.numeric(bbox[[2]])
+      max_row <- as.numeric(bbox[[3]])
+      max_col <- as.numeric(bbox[[4]])
+
+      width <- max_col - min_col
+      height <- max_row - min_row
+
+      coco_det <- list(
+        image_id = as.integer(img_row$image_id),
+        category_id = as.integer(obj$category$id),
+        bbox = c(min_col, min_row, width, height),
+        score = as.numeric(obj$score$value)
+      )
+
+      results_list[[length(results_list) + 1]] <- coco_det
+      detections_rows[[length(detections_rows) + 1]] <- tibble::tibble(
+        image_id = img_row$image_id,
+        file_name = img_row$file_name,
+        category_id = obj$category$id,
+        category_name = obj$category$name,
+        score = as.numeric(obj$score$value),
+        xmin = min_col,
+        ymin = min_row,
+        width = width,
+        height = height
+      )
+    }
+  }
+  cli::cli_progress_done()
+
+  if (!length(results_list)) {
+    cli::cli_warn("No detections were produced; returning empty evaluation results.")
+    return(list(
+      summary = tibble::tibble(metric = character(), value = numeric()),
+      predictions = tibble::tibble(),
+      coco_eval = NULL
+    ))
+  }
+
+  if (!is.null(save_predictions)) {
+    jsonlite::write_json(results_list, save_predictions, auto_unbox = TRUE, digits = 6)
+  }
+
+  results_py <- reticulate::r_to_py(results_list, convert = FALSE)
+  coco_dt <- coco_gt$loadRes(results_py)
+  coco_eval <- coco_eval_mod$COCOeval(coco_gt, coco_dt, iou_type)
+
+  # Configure maxDets for dense detection scenarios
+  if (max_dets > 100) {
+    coco_eval$params$maxDets <- reticulate::r_to_py(as.integer(c(1, 10, max_dets)))
+  }
+
+  coco_eval$evaluate()
+  coco_eval$accumulate()
+  coco_eval$summarize()
+
+  stats <- reticulate::py_to_r(coco_eval$stats)
+  ar_label <- if (max_dets > 100) paste0("AR@", max_dets) else "AR@100"
+  names(stats) <- c(
+    "AP", "AP50", "AP75", "AP_small", "AP_medium", "AP_large",
+    "AR@1", "AR@10", ar_label, "AR_small", "AR_medium", "AR_large"
+  )
+
+  summary_tbl <- tibble::tibble(
+    metric = names(stats),
+    value = as.numeric(stats)
+  )
+
+  predictions_tbl <- dplyr::bind_rows(detections_rows)
+
+  result <- list(
+    summary = summary_tbl,
+    predictions = predictions_tbl,
+    coco_eval = coco_eval
+  )
+  class(result) <- "sahi_evaluation"
+  result
 }
 
 #' Evaluate model training
@@ -202,7 +401,9 @@ evaluate_training <- function(model_dir = "Detectron2_Models",
   # Add validation data if available
   if (nrow(parsed$validation) > 0) result$validation_data <- parsed$validation
   if (nrow(parsed$classwise) > 0) result$validation_classwise <- parsed$classwise
-  
+
+  class(result) <- "training_evaluation"
+
   # Print summary
   cli::cli_dl(c(
     "Training iterations" = summary$total_iterations,
@@ -212,7 +413,7 @@ evaluate_training <- function(model_dir = "Detectron2_Models",
     "Training records" = nrow(parsed$training),
     "Output directory" = output_dir
   ))
-  
+
   if (nrow(parsed$training) > 0) {
     final_metrics <- tail(parsed$training, 1)
     if ("total_loss" %in% names(final_metrics)) {
@@ -222,4 +423,126 @@ evaluate_training <- function(model_dir = "Detectron2_Models",
 
   cli::cli_alert_success("Training evaluation completed")
   return(result)
+}
+
+#' Diagnose annotation dataset for potential issues
+#'
+#' Analyzes a COCO annotation file to identify potential data quality issues
+#' such as incomplete annotations, class imbalance, or unusual object distributions.
+#'
+#' @param annotation_json Path to COCO annotation JSON file
+#' @param image_dir Optional directory containing images (for file checks)
+#' @return List with diagnostic statistics and warnings
+#' @export
+diagnose_annotations <- function(annotation_json, image_dir = NULL) {
+
+  if (!fs::file_exists(annotation_json)) {
+    cli::cli_abort("Annotation file not found: {.path {annotation_json}}")
+  }
+
+  cli::cli_h2("Annotation Diagnostics")
+  cli::cli_alert_info("Analyzing: {.path {annotation_json}}")
+
+  # Load annotations
+  anno <- jsonlite::read_json(annotation_json)
+
+  # Basic counts
+  n_images <- length(anno$images)
+  n_annotations <- length(anno$annotations)
+  n_categories <- length(anno$categories)
+
+  # Per-image annotation counts
+  annos_per_image <- table(purrr::map_int(anno$annotations, "image_id"))
+
+  # Object areas
+  bbox_areas <- purrr::map_dbl(anno$annotations, function(a) {
+    bbox <- a$bbox
+    bbox[[3]] * bbox[[4]]  # width * height
+  })
+
+  # Category distribution
+  cat_counts <- table(purrr::map_int(anno$annotations, "category_id"))
+
+  # Print summary
+  cli::cli_h3("Dataset Summary")
+  cli::cli_dl(c(
+    "Total images" = n_images,
+    "Total annotations" = n_annotations,
+    "Annotations per image (mean)" = round(mean(annos_per_image), 1),
+    "Annotations per image (median)" = median(annos_per_image),
+    "Annotations per image (max)" = max(annos_per_image),
+    "Categories" = n_categories
+  ))
+
+  # Object size distribution
+  cli::cli_h3("Object Size Distribution")
+  cli::cli_text("Area (pixels²):")
+  print(summary(bbox_areas))
+
+  # Potential issues
+  cli::cli_h3("Potential Issues")
+
+  warnings <- list()
+
+  # Check for images with very few annotations
+  sparse_images <- sum(annos_per_image < 10)
+  if (sparse_images > n_images * 0.1) {
+    msg <- paste0(sparse_images, " images have <10 annotations (",
+                  round(100*sparse_images/n_images, 1), "%)")
+    cli::cli_alert_warning(msg)
+    warnings <- c(warnings, list(sparse_annotations = msg))
+  }
+
+  # Check for images with suspiciously many annotations
+  dense_threshold <- 100
+  dense_images <- sum(annos_per_image > dense_threshold)
+  if (dense_images > 0) {
+    msg <- paste0(dense_images, " images have >", dense_threshold,
+                  " annotations (max: ", max(annos_per_image), ")")
+    cli::cli_alert_info(msg)
+  }
+
+  # Check for very small objects
+  tiny_threshold <- 100  # pixels²
+  tiny_objects <- sum(bbox_areas < tiny_threshold)
+  if (tiny_objects > n_annotations * 0.2) {
+    msg <- paste0(tiny_objects, " objects are very small (<", tiny_threshold,
+                  "px²) - ", round(100*tiny_objects/n_annotations, 1), "%")
+    cli::cli_alert_warning(msg)
+    warnings <- c(warnings, list(tiny_objects = msg))
+  }
+
+  # Check for missing images
+  if (!is.null(image_dir)) {
+    image_files <- purrr::map_chr(anno$images, "file_name")
+    image_paths <- fs::path(image_dir, image_files)
+    missing <- sum(!fs::file_exists(image_paths))
+    if (missing > 0) {
+      msg <- paste0(missing, " image files not found in ", image_dir)
+      cli::cli_alert_danger(msg)
+      warnings <- c(warnings, list(missing_images = msg))
+    } else {
+      cli::cli_alert_success("All image files found")
+    }
+  }
+
+  # Return diagnostic data
+  result <- list(
+    n_images = n_images,
+    n_annotations = n_annotations,
+    n_categories = n_categories,
+    annos_per_image = as.numeric(annos_per_image),
+    bbox_areas = bbox_areas,
+    category_counts = as.numeric(cat_counts),
+    warnings = warnings,
+    summary_stats = list(
+      mean_annos_per_image = mean(annos_per_image),
+      median_annos_per_image = median(annos_per_image),
+      max_annos_per_image = max(annos_per_image),
+      mean_bbox_area = mean(bbox_areas),
+      median_bbox_area = median(bbox_areas)
+    )
+  )
+
+  invisible(result)
 }

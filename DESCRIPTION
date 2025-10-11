@@ -35,7 +35,10 @@ Suggests:
     magick,
     patchwork,
     scico,
-    tools
+    testthat (>= 3.0.0),
+    tools,
+    withr
+Config/testthat/edition: 3
 URL: https://flmnh-ai.github.io/petrographer/
 BugReports: https://github.com/flmnh-ai/petrographer/issues
 SystemRequirements: Python (>= 3.8), PyTorch, Detectron2, SAHI,

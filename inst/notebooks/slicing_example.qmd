@@ -1,0 +1,175 @@
+---
+title: "Dataset Slicing Example"
+format: html
+---
+
+Example of slicing a dataset for improved dense detection performance.
+
+## Setup
+
+```{r setup, message=FALSE}
+library(tidyverse)
+library(fs)
+library(here)
+library(petrographer)
+
+data_dir <- here("data/processed/inclusions")
+```
+
+## Original Dataset
+
+```{r original-diagnostics}
+# Check original dataset
+validate_dataset(data_dir)
+
+# Diagnose annotations
+train_diag <- diagnose_annotations(
+  annotation_json = path(data_dir, "train/_annotations.coco.json"),
+  image_dir = path(data_dir, "train")
+)
+
+val_diag <- diagnose_annotations(
+  annotation_json = path(data_dir, "valid/_annotations.coco.json"),
+  image_dir = path(data_dir, "valid")
+)
+```
+
+```{r original-plots}
+# Plot annotation distribution
+bind_rows(
+  tibble(count = train_diag$annos_per_image, split = "train"),
+  tibble(count = val_diag$annos_per_image, split = "valid")
+) %>%
+  ggplot(aes(x = count, fill = split)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = 100, linetype = "dashed", color = "red") +
+  annotate("text", x = 100, y = Inf, label = "Default maxDets=100",
+           vjust = 1.5, hjust = -0.1, color = "red", size = 3) +
+  scale_fill_brewer(palette = "Set1") +
+  labs(
+    title = "Original Dataset - Annotations per Image",
+    subtitle = "Many images have >100 annotations",
+    x = "Number of annotations",
+    y = "Number of images"
+  ) +
+  theme_minimal()
+```
+
+## Slice Dataset
+
+```{r slice}
+# Slice the dataset
+sliced_dir <- slice_dataset(
+  input_dir = data_dir,
+  output_dir = here("data/processed/inclusions_sliced"),
+  slice_size = 1024,
+  overlap = 0.2,
+  min_area_ratio = 0.1
+)
+```
+
+## Sliced Dataset Diagnostics
+
+```{r sliced-diagnostics}
+# Diagnose sliced dataset
+train_sliced_diag <- diagnose_annotations(
+  annotation_json = path(sliced_dir, "train/_annotations.coco.json"),
+  image_dir = path(sliced_dir, "train")
+)
+
+val_sliced_diag <- diagnose_annotations(
+  annotation_json = path(sliced_dir, "valid/_annotations.coco.json"),
+  image_dir = path(sliced_dir, "valid")
+)
+```
+
+```{r sliced-comparison}
+# Compare original vs sliced
+comparison <- tibble(
+  dataset = c("Original", "Sliced"),
+  train_images = c(train_diag$n_images, train_sliced_diag$n_images),
+  train_annotations = c(train_diag$n_annotations, train_sliced_diag$n_annotations),
+  val_images = c(val_diag$n_images, val_sliced_diag$n_images),
+  val_annotations = c(val_diag$n_annotations, val_sliced_diag$n_annotations)
+) %>%
+  mutate(
+    train_per_image = train_annotations / train_images,
+    val_per_image = val_annotations / val_images
+  )
+
+print(comparison)
+
+cat("\n== Summary ==\n")
+cat(sprintf("Image increase: %.1fx\n", comparison$train_images[2] / comparison$train_images[1]))
+cat(sprintf("Annotations per image: %.1f → %.1f\n",
+            comparison$train_per_image[1], comparison$train_per_image[2]))
+```
+
+```{r sliced-plots}
+# Plot comparison
+bind_rows(
+  tibble(count = train_diag$annos_per_image, dataset = "Original"),
+  tibble(count = train_sliced_diag$annos_per_image, dataset = "Sliced")
+) %>%
+  ggplot(aes(x = count, fill = dataset)) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = 100, linetype = "dashed", color = "red") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Original vs Sliced - Annotations per Image",
+    subtitle = "Slicing reduces annotations per image and increases total images",
+    x = "Number of annotations per image",
+    y = "Number of images"
+  ) +
+  theme_minimal()
+
+# Object size comparison
+bind_rows(
+  tibble(area = train_diag$bbox_areas, dataset = "Original"),
+  tibble(area = train_sliced_diag$bbox_areas, dataset = "Sliced")
+) %>%
+  ggplot(aes(x = log10(area), fill = dataset)) +
+  geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Object Size Distribution",
+    x = "log10(Area) in pixels²",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+## Train on Sliced Dataset
+
+```{r train-sliced, eval=FALSE}
+# Train model on sliced data
+model_path <- train_model(
+  data_dir = sliced_dir,
+  output_name = "inclusions_sliced",
+  ims_per_batch = 12,
+  num_workers = 12,
+  hpc_cpus_per_task = 16,
+  hpc_mem = "96gb",
+  eval_period = 200,
+  max_iter = 6000,
+  num_classes = 1
+)
+```
+
+## Summary
+
+**Expected improvements from slicing:**
+- More training samples (~2x images)
+- Better small object detection
+- Lower annotations per image (easier for model)
+- Better gradient flow
+
+**When to use slicing:**
+- Images >1024px
+- Dense detection (100+ objects per image)
+- Small objects in large images
+
+**When NOT to slice:**
+- All images already <1024px
+- Few objects per image (<10)
+- Objects are very large
