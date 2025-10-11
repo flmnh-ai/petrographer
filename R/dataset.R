@@ -3,8 +3,13 @@
 # ============================================================================
 
 #' Validate a COCO-style dataset directory
+#'
+#' Performs existence checks for expected splits and annotations, then runs
+#' annotation diagnostics (counts, size distribution, potential issues) for
+#' each split.
+#'
 #' @param data_dir Directory containing 'train' and 'valid' subdirectories
-#' @return A list with validation flags, counts, and size metrics
+#' @return A list with validation flags, counts, size metrics, and diagnostics
 #' @export
 validate_dataset <- function(data_dir) {
   data_dir <- fs::path_abs(fs::path_norm(data_dir))
@@ -42,14 +47,150 @@ validate_dataset <- function(data_dir) {
 
   cli::cli_alert_success("Dataset valid")
 
-  # Return simple list
+  cli::cli_h2("Annotation Diagnostics")
+  train_diag <- annotation_diagnostics(
+    annotation_json = fs::path(train_dir, "_annotations.coco.json"),
+    image_dir = train_dir,
+    split_label = "Train"
+  )
+  val_diag <- annotation_diagnostics(
+    annotation_json = fs::path(val_dir, "_annotations.coco.json"),
+    image_dir = val_dir,
+    split_label = "Validation"
+  )
+
   invisible(list(
     data_dir = data_dir,
     train_images = train_images,
     val_images = val_images,
     size_mb = round(total_mb, 1),
-    valid = valid
+    valid = valid,
+    diagnostics = list(train = train_diag, valid = val_diag)
   ))
+}
+
+annotation_diagnostics <- function(annotation_json, image_dir = NULL, split_label = NULL, emit_header = FALSE) {
+  if (!fs::file_exists(annotation_json)) {
+    cli::cli_abort("Annotation file not found: {.path {annotation_json}}")
+  }
+
+  label <- split_label
+  if (is.null(label) || !nzchar(label)) {
+    parent_dir <- fs::path_dir(annotation_json)
+    label <- stringr::str_to_title(fs::path_file(parent_dir))
+  }
+
+  if (isTRUE(emit_header)) {
+    cli::cli_h2("Annotation Diagnostics")
+  }
+
+  cli::cli_h3(glue::glue("{label} Annotations"))
+  cli::cli_alert_info("Analyzing: {.path {annotation_json}}")
+
+  anno <- jsonlite::read_json(annotation_json)
+  images <- anno$images
+  annotations <- if (is.null(anno$annotations)) list() else anno$annotations
+  categories <- anno$categories
+
+  n_images <- length(images)
+  n_annotations <- length(annotations)
+  n_categories <- length(categories)
+
+  image_ids <- if (length(annotations) == 0) integer(0) else purrr::map_int(annotations, "image_id")
+  annos_per_image <- if (length(image_ids) == 0) integer(0) else table(image_ids)
+  annos_per_image_vec <- as.numeric(annos_per_image)
+
+  bbox_areas <- if (length(annotations) == 0) {
+    numeric(0)
+  } else {
+    purrr::map_dbl(annotations, function(a) {
+      bbox <- a$bbox
+      if (is.null(bbox) || length(bbox) < 4) return(NA_real_)
+      bbox[[3]] * bbox[[4]]
+    })
+  }
+
+  category_ids <- if (length(annotations) == 0) integer(0) else purrr::map_int(annotations, "category_id")
+  cat_counts <- if (length(category_ids) == 0) integer(0) else table(category_ids)
+
+  mean_annos <- if (length(annos_per_image_vec) > 0) round(mean(annos_per_image_vec), 1) else 0
+  median_annos <- if (length(annos_per_image_vec) > 0) stats::median(annos_per_image_vec) else 0
+  max_annos <- if (length(annos_per_image_vec) > 0) max(annos_per_image_vec) else 0
+
+  cli::cli_dl(c(
+    "Total images" = n_images,
+    "Total annotations" = n_annotations,
+    "Annotations per image (mean)" = mean_annos,
+    "Annotations per image (median)" = median_annos,
+    "Annotations per image (max)" = max_annos,
+    "Categories" = n_categories
+  ))
+
+  cli::cli_h3("Object Size Distribution")
+  cli::cli_text("Area (pixels²):")
+  print(summary(bbox_areas))
+
+  cli::cli_h3("Potential Issues")
+
+  warnings <- list()
+
+  sparse_images <- if (length(annos_per_image_vec) == 0) 0 else sum(annos_per_image_vec < 10)
+  if (sparse_images > n_images * 0.1) {
+    msg <- paste0(sparse_images, " images have <10 annotations (",
+                  if (n_images > 0) round(100 * sparse_images / n_images, 1) else 0, "%)")
+    cli::cli_alert_warning(msg)
+    warnings <- c(warnings, list(sparse_annotations = msg))
+  }
+
+  dense_threshold <- 100
+  dense_images <- if (length(annos_per_image_vec) == 0) 0 else sum(annos_per_image_vec > dense_threshold)
+  if (dense_images > 0) {
+    msg <- paste0(dense_images, " images have >", dense_threshold,
+                  " annotations (max: ", max_annos, ")")
+    cli::cli_alert_info(msg)
+  }
+
+  tiny_threshold <- 100
+  tiny_objects <- if (length(bbox_areas) == 0) 0 else sum(bbox_areas < tiny_threshold, na.rm = TRUE)
+  if (tiny_objects > n_annotations * 0.2) {
+    msg <- paste0(tiny_objects, " objects are very small (<", tiny_threshold,
+                  "px²) - ", if (n_annotations > 0) round(100 * tiny_objects / n_annotations, 1) else 0, "%")
+    cli::cli_alert_warning(msg)
+    warnings <- c(warnings, list(tiny_objects = msg))
+  }
+
+  if (!is.null(image_dir)) {
+    image_files <- if (n_images == 0) character(0) else purrr::map_chr(images, "file_name", .default = NA_character_)
+    image_paths <- fs::path(image_dir, image_files)
+    missing <- if (length(image_paths) == 0) 0 else sum(!fs::file_exists(image_paths))
+    if (missing > 0) {
+      msg <- paste0(missing, " image files not found in ", image_dir)
+      cli::cli_alert_danger(msg)
+      warnings <- c(warnings, list(missing_images = msg))
+    } else {
+      cli::cli_alert_success("All image files found")
+    }
+  }
+
+  result <- list(
+    split = split_label,
+    n_images = n_images,
+    n_annotations = n_annotations,
+    n_categories = n_categories,
+    annos_per_image = annos_per_image_vec,
+    bbox_areas = bbox_areas,
+    category_counts = as.numeric(cat_counts),
+    warnings = warnings,
+    summary_stats = list(
+      mean_annos_per_image = if (length(annos_per_image_vec) > 0) mean(annos_per_image_vec) else NA_real_,
+      median_annos_per_image = if (length(annos_per_image_vec) > 0) stats::median(annos_per_image_vec) else NA_real_,
+      max_annos_per_image = if (length(annos_per_image_vec) > 0) max_annos else NA_real_,
+      mean_bbox_area = if (length(bbox_areas) > 0) mean(bbox_areas, na.rm = TRUE) else NA_real_,
+      median_bbox_area = if (length(bbox_areas) > 0) stats::median(bbox_areas, na.rm = TRUE) else NA_real_
+    )
+  )
+
+  invisible(result)
 }
 
 #' Summarize a dataset directory

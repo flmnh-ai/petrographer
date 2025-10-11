@@ -11,9 +11,20 @@
 #' @keywords internal
 parse_metrics <- function(metrics_file) {
   if (!fs::file_exists(metrics_file)) return(list(training = tibble::tibble(), validation = tibble::tibble(), classwise = tibble::tibble()))
-  con <- file(metrics_file, open = "r"); on.exit(close(con), add = TRUE)
+
+  raw_lines <- readLines(metrics_file, warn = FALSE)
+  if (length(raw_lines) == 0) return(list(training = tibble::tibble(), validation = tibble::tibble(), classwise = tibble::tibble()))
+
+  sanitized_lines <- stringr::str_replace_all(raw_lines, "(?<=[:\\s])NaN(?=[,}\\s])", "null")
+  replaced_nan <- !identical(raw_lines, sanitized_lines)
+
+  con <- textConnection(sanitized_lines); on.exit(close(con), add = TRUE)
   df <- tryCatch(jsonlite::stream_in(con, verbose = FALSE), error = function(e) NULL)
   if (is.null(df)) return(list(training = tibble::tibble(), validation = tibble::tibble(), classwise = tibble::tibble()))
+
+  if (replaced_nan) {
+    warning("metrics.json contained NaN values; replacing with NA for compatibility", call. = FALSE)
+  }
   d <- tibble::as_tibble(df) |>
     clean_names() |>
     dplyr::mutate(.row_id = dplyr::row_number())
