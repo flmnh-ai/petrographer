@@ -8,13 +8,14 @@ train_model(
   data_dir,
   output_name,
   num_classes,
+  backbone = "resnet50",
+  freeze_at = 1,
   max_iter = 12000,
-  learning_rate = 5e-04,
+  learning_rate = NULL,
   device = "cuda",
   eval_period = 1000,
   checkpoint_period = 0,
   ims_per_batch = NA,
-  auto_scale_lr = TRUE,
   num_workers = NULL,
   hpc_env = NULL,
   hpc_cpus_per_task = NULL,
@@ -25,6 +26,7 @@ train_model(
   hpc_base_dir = Sys.getenv("PETROGRAPHER_HPC_BASE_DIR", ""),
   local_output_dir = here::here("Detectron2_Models"),
   rsync_mode = c("update", "mirror"),
+  auto_version = TRUE,
   publish_after_train = FALSE,
   model_board = NULL,
   model_description = NULL
@@ -33,12 +35,21 @@ train_model(
 \arguments{
 \item{data_dir}{Directory containing \verb{train/} and \verb{valid/} subdirectories with COCO annotations.}
 
-\item{output_name}{Name for the trained model (used for artifact directories and pin names).}
+\item{output_name}{Name for the trained model (used for artifact directories and pin names).
+If \code{auto_version=TRUE} (default) and this name already exists, automatically appends \verb{_v2}, \verb{_v3}, etc.}
+
+\item{num_classes}{Number of object classes in your dataset.}
+
+\item{backbone}{Model backbone: "resnet50" (default), "resnet101", "resnext101", or a full Detectron2 model zoo key.}
+
+\item{freeze_at}{Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem; default), 2 (freeze stem + res2).
+Lower values train more layers = slower but better domain adaptation.}
 
 \item{max_iter}{Maximum training iterations. Default: 12000.}
 
-\item{learning_rate}{Base learning rate before auto-scaling by batch (default: 5e-4).
-Effective LR = learning_rate * (ims_per_batch / 16) when \code{auto_scale_lr = TRUE}.}
+\item{learning_rate}{Learning rate for the detection head. If NULL (default), uses smart
+auto-scaling based on \code{freeze_at} and batch size. Backbone automatically gets 0.1x this rate.
+If a number is provided, uses that exact value for the head (backbone still gets 0.1x).}
 
 \item{device}{Device for local training: 'cpu', 'cuda', or 'mps' (default: 'cuda').}
 
@@ -47,8 +58,6 @@ Effective LR = learning_rate * (ims_per_batch / 16) when \code{auto_scale_lr = T
 \item{checkpoint_period}{Checkpoint saving frequency (0 = final only; > 0 = every N iters).}
 
 \item{ims_per_batch}{Total images per iteration across all GPUs. If NA (default), uses 2 images per GPU.}
-
-\item{auto_scale_lr}{If TRUE (default), scale LR linearly by global batch vs. reference batch 16.}
 
 \item{num_workers}{DataLoader workers per process (Detectron2). If NULL (default), set to images per GPU.}
 
@@ -69,6 +78,8 @@ Effective LR = learning_rate * (ims_per_batch / 16) when \code{auto_scale_lr = T
 \item{local_output_dir}{Local directory to save trained model (default: \code{Detectron2_Models}).}
 
 \item{rsync_mode}{Data sync mode: 'update' (default) or 'mirror' (adds --delete).}
+
+\item{auto_version}{Auto-increment version suffix if output_name exists (default: TRUE).}
 
 \item{publish_after_train}{Whether to publish (pin) the trained model to a board.}
 

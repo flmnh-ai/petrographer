@@ -10,6 +10,8 @@ train_model_local(
   max_iter,
   learning_rate,
   num_classes,
+  backbone,
+  freeze_at,
   device,
   eval_period,
   checkpoint_period,

@@ -17,11 +17,12 @@ Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3
 Depends:
     R (>= 4.1)
-Imports: 
+Imports:
     cli,
     dplyr,
     fs,
     glue,
+    hipergator,
     jsonlite,
     processx,
     purrr,

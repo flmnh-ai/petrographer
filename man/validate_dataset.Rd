@@ -7,7 +7,7 @@
 validate_dataset(data_dir)
 }
 \arguments{
-\item{data_dir}{Directory containing 'train' and 'val' subdirectories}
+\item{data_dir}{Directory containing 'train' and 'valid' subdirectories}
 }
 \value{
 A list with validation flags, counts, and size metrics

@@ -10,6 +10,8 @@ train_model_hpc(
   max_iter,
   learning_rate,
   num_classes,
+  backbone,
+  freeze_at,
   eval_period,
   checkpoint_period,
   ims_per_batch,
@@ -21,7 +23,8 @@ train_model_hpc(
   hpc_host,
   hpc_user,
   hpc_base_dir,
-  local_output_dir
+  local_output_dir,
+  auto_version = TRUE
 )
 }
 \description{

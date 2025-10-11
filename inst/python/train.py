@@ -20,16 +20,13 @@ from detectron2.utils.logger import setup_logger
 from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch
 from detectron2.config import get_cfg
 from detectron2 import model_zoo
-from detectron2.data import DatasetCatalog, MetadataCatalog
-from detectron2.data.datasets import load_coco_json, register_coco_instances
-from detectron2.data import DatasetMapper, build_detection_train_loader
+from detectron2.data import DatasetCatalog, MetadataCatalog, build_detection_train_loader
+from detectron2.data import DatasetMapper
 from detectron2.data import transforms as T
+from detectron2.data.datasets import register_coco_instances
 from detectron2.evaluation import COCOEvaluator
-from detectron2.solver.build import get_default_optimizer_params, maybe_add_gradient_clipping
 from detectron2.engine.hooks import BestCheckpointer
 from detectron2.checkpoint import DetectionCheckpointer
-
-from pycocotools.coco import COCO
 
 # Throughput QoL
 try:
@@ -47,60 +44,63 @@ def setup_cfg(args):
 
     cfg = get_cfg()
 
-    zoo_key = "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml"
+    # Map backbone names to model zoo keys
+    backbone_map = {
+        "resnet50": "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml",
+        "resnet101": "COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml",
+        "resnext101": "COCO-InstanceSegmentation/mask_rcnn_X_101_32x8d_FPN_3x.yaml",
+    }
+
+    # Get backbone model zoo key
+    zoo_key = backbone_map.get(args.backbone.lower(), args.backbone)
+
+    # Load base config
     cfg.merge_from_file(model_zoo.get_config_file(zoo_key))
     cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(zoo_key)
 
+    # Basic settings
     cfg.OUTPUT_DIR = args.output_dir
     cfg.MODEL.DEVICE = args.device
     cfg.SOLVER.AMP.ENABLED = (args.device == "cuda")
 
+    # Datasets
     cfg.DATASETS.TRAIN = (args.dataset_name,)
     cfg.DATASETS.TEST  = (args.val_dataset_name,)
 
+    # Dataloader
     cfg.DATALOADER.NUM_WORKERS = args.num_workers
-    cfg.DATALOADER.PIN_MEMORY = True
-    cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = True
 
+    # Training schedule
     cfg.SOLVER.IMS_PER_BATCH = args.ims_per_batch
     cfg.SOLVER.MAX_ITER = args.max_iter
     cfg.SOLVER.BASE_LR = args.learning_rate
-    cfg.SOLVER.OPTIMIZER = "AdamW"           # for logging; builder overrides
-    cfg.SOLVER.WEIGHT_DECAY = 5e-2
-    cfg.SOLVER.BACKBONE_MULTIPLIER = 0.1
+    cfg.SOLVER.CHECKPOINT_PERIOD = args.checkpoint_period if args.checkpoint_period > 0 else 999_999
 
+    # Evaluation period
+    cfg.TEST.EVAL_PERIOD = args.eval_period
+
+    # Tier 1 improvements: Better learning schedule
     cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupCosineLR"
-    cfg.SOLVER.WARMUP_ITERS = max(1, int(0.1 * args.max_iter))
+    warmup_target = max(1, int(0.1 * args.max_iter))
+    cfg.SOLVER.WARMUP_ITERS = max(100, min(warmup_target, 1000))
     cfg.SOLVER.WARMUP_FACTOR = 1.0 / 1000
 
-    cfg.SOLVER.CLIP_GRADIENTS.ENABLED = True
-    cfg.SOLVER.CLIP_GRADIENTS.CLIP_TYPE = "value"
-    cfg.SOLVER.CLIP_GRADIENTS.CLIP_VALUE = 1.0
-    cfg.SOLVER.CLIP_GRADIENTS.NORM_TYPE = 2.0
+    # Backbone freezing (0=freeze nothing, 1=freeze stem, 2=freeze stem+res2, etc.)
+    cfg.MODEL.BACKBONE.FREEZE_AT = args.freeze_at
 
-    cfg.SOLVER.CHECKPOINT_PERIOD = args.checkpoint_period if args.checkpoint_period > 0 else 999_999
-    cfg.MODEL.BACKBONE.FREEZE_AT = 1
+    # Differential learning rates: backbone gets 0.1x, head gets 1.0x
+    # This is standard for fine-tuning pretrained models
+    cfg.SOLVER.BACKBONE_MULTIPLIER = 0.1
 
-    cfg.MODEL.ANCHOR_GENERATOR.SIZES = [[16, 32], [32, 64], [64, 128], [128, 256], [256, 512]]
-    cfg.MODEL.ANCHOR_GENERATOR.ASPECT_RATIOS = [[0.33, 0.5, 1.0, 2.0]]
-    cfg.MODEL.RPN.PRE_NMS_TOPK_TRAIN = 6000
-    cfg.MODEL.RPN.PRE_NMS_TOPK_TEST  = 6000
-    cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 3000
-    cfg.MODEL.RPN.POST_NMS_TOPK_TEST  = 3000
-    cfg.MODEL.RPN.NMS_THRESH = 0.8
-    cfg.MODEL.PROPOSAL_GENERATOR.MIN_SIZE = 0
-
-    # IMPORTANT: NUM_CLASSES must be set by main(args) before this runs
+    # Number of classes (only thing that must be set for your dataset)
     cfg.MODEL.ROI_HEADS.NUM_CLASSES = args.num_classes
-    cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE = 768
-    cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION = 0.33
-    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.1
-    cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST = 0.6
-    cfg.TEST.DETECTIONS_PER_IMAGE = 600
 
-    cfg.INPUT.MIN_SIZE_TEST = 1024
-    cfg.INPUT.MAX_SIZE_TEST = 1333
+    # Dense detection settings (for datasets with 100+ objects per image)
+    cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 3000      # default: 2000
+    cfg.MODEL.RPN.POST_NMS_TOPK_TEST = 1500       # default: 1000
+    cfg.TEST.DETECTIONS_PER_IMAGE = 500           # default: 100
 
+    # Optional overrides from command line
     if args.opts:
         cfg.merge_from_list(args.opts)
 
@@ -110,75 +110,34 @@ def setup_cfg(args):
 
 
 # ---------------------------------------------------------------------
-# Data utilities
+# Augmentations
 # ---------------------------------------------------------------------
-def load_and_filter_dataset(annotation_json, image_root):
-    ds = load_coco_json(annotation_json, image_root)
-    return [d for d in ds if len(d.get("annotations", [])) > 0]
-
-
-def build_microscopy_augmentation():
-    """
-    Microscopy-friendly augs:
-    - small-angle rotation (±10°)
-    - crop BEFORE resize (brings tiny objs into regime)
-    - mild color jitter
-    - multi-scale resize
-    """
+def build_augmentations(cfg):
+    """Augmentations: flips + color jitter"""
     return [
-        T.RandomRotation(angle=[-10, 10], sample_style="range"),
-        T.RandomCrop("relative_range", (0.7, 0.7)),
-        T.RandomFlip(prob=0.5, horizontal=True),
+        T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
         T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-        T.RandomBrightness(0.9, 1.1),
-        T.RandomContrast(0.9, 1.1),
-        T.RandomSaturation(0.9, 1.1),
+        T.RandomRotation(angle=[0, 90, 180, 270], sample_style="choice", expand=False),
+        T.RandomBrightness(0.8, 1.2),  # ±20% brightness
+        T.RandomContrast(0.8, 1.2),    # ±20% contrast
+        T.RandomSaturation(0.8, 1.2),  # ±20% saturation
         T.ResizeShortestEdge(
-            short_edge_length=(768, 896, 1024, 1152),
-            max_size=1333,
-            sample_style="choice",
+            cfg.INPUT.MIN_SIZE_TRAIN, cfg.INPUT.MAX_SIZE_TRAIN, "choice"
         ),
     ]
 
 
-def _log_coco_stats(json_path, tag):
-    try:
-        from pycocotools.coco import COCO
-        coco = COCO(json_path)
-        cat_ids = coco.getCatIds()
-        cats = coco.loadCats(cat_ids)
-        counts = {c["name"]: len(coco.getAnnIds(catIds=[c["id"]])) for c in cats}
-        logging.getLogger(__name__).info(f"[{tag}] categories: {[c['name'] for c in cats]}")
-        logging.getLogger(__name__).info(f"[{tag}] instance counts: {counts}")
-    except Exception as e:
-        logging.getLogger(__name__).warning(f"Could not log COCO stats for {tag}: {e}")
-
-
 # ---------------------------------------------------------------------
-# Trainer (force AdamW; keep clipping)
+# Trainer
 # ---------------------------------------------------------------------
 class CocoTrainer(DefaultTrainer):
-    @classmethod
-    def build_optimizer(cls, cfg, model):
-        params = get_default_optimizer_params(
-            model,
-            base_lr=cfg.SOLVER.BASE_LR,
-            weight_decay=cfg.SOLVER.WEIGHT_DECAY,
-            weight_decay_norm=0.0,
-            weight_decay_bias=0.0,
-        )
-        opt = torch.optim.AdamW(params, lr=cfg.SOLVER.BASE_LR, betas=(0.9, 0.999))
-        return maybe_add_gradient_clipping(cfg, opt)
-
     @classmethod
     def build_train_loader(cls, cfg):
         mapper = DatasetMapper(
             cfg,
             is_train=True,
-            augmentations=build_microscopy_augmentation(),
+            augmentations=build_augmentations(cfg),
             image_format="RGB",
-            # If you want to avoid shapely dep, uncomment next line:
-            # instance_mask_format="bitmask",
         )
         return build_detection_train_loader(cfg, mapper=mapper)
 
@@ -319,6 +278,10 @@ if __name__ == "__main__":
 
     # Model
     parser.add_argument("--num-classes", type=int, default=-1) # -1 => infer from dataset
+    parser.add_argument("--backbone", type=str, default="resnet50",
+                        help="Backbone: resnet50, resnet101, resnext101, or full model zoo key")
+    parser.add_argument("--freeze-at", type=int, default=2,
+                        help="Freeze backbone up to this stage (0=none, 1=stem, 2=stem+res2, default=1)")
 
     # Optional detectron2 overrides
     parser.add_argument("--opts", nargs=argparse.REMAINDER)

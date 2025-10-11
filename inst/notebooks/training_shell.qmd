@@ -27,7 +27,7 @@ validate_dataset(here::here("data/processed/shell_mixed"))
 ## Training
 
 ```{r training}
-# Train model (HPC settings from .Renviron)
+# Train model - HPC settings configured above
 model_path <- train_model(
   data_dir = here::here("data/processed/shell_mixed"),
   output_name = "shell_detector_v3",
