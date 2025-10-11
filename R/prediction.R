@@ -438,6 +438,7 @@ diagnose_annotations <- function(annotation_json, image_dir = NULL) {
   annotation_diagnostics(
     annotation_json = annotation_json,
     image_dir = image_dir,
-    emit_header = TRUE
+    emit_header = TRUE,
+    verbose = TRUE
   )
 }
