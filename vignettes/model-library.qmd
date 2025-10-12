@@ -1,0 +1,92 @@
+---
+title: "Model & Dataset Library"
+format:
+  html:
+    toc: false
+    code-fold: false
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(petrographer)
+library(bslib)
+library(htmltools)
+
+catalog_path <- fs::path("pkgdown", "assets", "model_catalog.rds")
+if (fs::file_exists(catalog_path)) {
+  catalog <- readRDS(catalog_path)
+} else {
+  board <- pg_board_pkgdown()
+  catalog <- list(
+    models = pg_model_catalog(board),
+    datasets = pg_dataset_catalog(board)
+  )
+}
+models <- catalog$models
+datasets <- catalog$datasets
+
+render_card <- function(row) {
+  badges <- row$badges[[1]]
+  badge_tag <- NULL
+  if (length(badges)) {
+    badge_tag <- div(
+      class = "d-flex flex-wrap gap-2 mt-3",
+      purrr::imap(badges, function(val, nm) {
+        bslib::value_box(value = val, title = nm, showcase = NULL, showcase_layout = "left")
+      })
+    )
+  }
+
+  image_tag <- NULL
+  if (!is.null(row$image_data) && !is.na(row$image_data) && nzchar(row$image_data)) {
+    image_tag <- img(src = row$image_data, class = "img-fluid rounded mb-3")
+  }
+
+  buttons <- row$buttons[[1]]
+  button_tag <- NULL
+  if (length(buttons)) {
+    button_tag <- div(
+      class = "d-flex flex-wrap gap-2",
+      purrr::map(buttons, function(btn) {
+        bslib::button_link(
+          btn$text %||% "Download",
+          href = btn$href %||% "#",
+          size = "sm"
+        )
+      })
+    )
+  }
+
+  bslib::card(
+    bslib::card_header(div(class = "fw-semibold", row$title)),
+    bslib::card_body(
+      div(class = "text-muted small mb-2", row$subtitle),
+      image_tag,
+      HTML(row$body),
+      badge_tag
+    ),
+    if (!is.null(button_tag)) bslib::card_footer(button_tag)
+  )
+}
+
+render_cards <- function(df) {
+  if (!nrow(df)) {
+    HTML("<p>No entries published yet.</p>")
+  } else {
+    cards <- purrr::map(seq_len(nrow(df)), function(i) render_card(df[i, ]))
+    width <- if (length(cards) >= 3) 1/3 else if (length(cards) == 2) 1/2 else 1
+    do.call(bslib::layout_column_wrap, c(list(width = width), cards))
+  }
+}
+```
+
+## Models
+
+```{r models, echo=FALSE}
+render_cards(models)
+```
+
+## Datasets
+
+```{r datasets, echo=FALSE}
+render_cards(datasets)
+```
