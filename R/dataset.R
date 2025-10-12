@@ -132,8 +132,14 @@ annotation_diagnostics <- function(annotation_json,
   images_list <- anno$images %||% list()
   images_tbl <- if (length(images_list) > 0) {
     tibble::tibble(
-      id = purrr::map_int(images_list, "id", .default = NA_integer_),
-      file_name = purrr::map_chr(images_list, "file_name", .default = NA_character_)
+      id = purrr::map_int(images_list, ~{
+        val <- .x$id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      file_name = purrr::map_chr(images_list, ~{
+        val <- .x$file_name
+        if (is.null(val)) NA_character_ else as.character(val)
+      })
     )
   } else {
     tibble::tibble(id = integer(), file_name = character())
@@ -142,9 +148,18 @@ annotation_diagnostics <- function(annotation_json,
   annotations_list <- anno$annotations %||% list()
   annotations_tbl <- if (length(annotations_list) > 0) {
     tibble::tibble(
-      id = purrr::map_int(annotations_list, "id", .default = NA_integer_),
-      image_id = purrr::map_int(annotations_list, "image_id", .default = NA_integer_),
-      category_id = purrr::map_int(annotations_list, "category_id", .default = NA_integer_),
+      id = purrr::map_int(annotations_list, ~{
+        val <- .x$id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      image_id = purrr::map_int(annotations_list, ~{
+        val <- .x$image_id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      category_id = purrr::map_int(annotations_list, ~{
+        val <- .x$category_id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
       area = purrr::map_dbl(annotations_list, function(a) {
         bbox <- a$bbox
         if (is.null(bbox) || length(bbox) < 4) return(NA_real_)
@@ -158,8 +173,14 @@ annotation_diagnostics <- function(annotation_json,
   categories_list <- anno$categories %||% list()
   categories_tbl <- if (length(categories_list) > 0) {
     tibble::tibble(
-      id = purrr::map_int(categories_list, "id", .default = NA_integer_),
-      name = purrr::map_chr(categories_list, "name", .default = NA_character_)
+      id = purrr::map_int(categories_list, ~{
+        val <- .x$id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      name = purrr::map_chr(categories_list, ~{
+        val <- .x$name
+        if (is.null(val)) NA_character_ else as.character(val)
+      })
     )
   } else {
     tibble::tibble(id = integer(), name = character())
@@ -182,6 +203,13 @@ annotation_diagnostics <- function(annotation_json,
   } else {
     tibble::tibble(category_id = integer(), count = integer())
   }
+
+  category_summary_tbl <- categories_tbl |>
+    dplyr::left_join(category_counts_tbl, by = c("id" = "category_id")) |>
+    dplyr::mutate(
+      count = dplyr::coalesce(count, 0L)
+    ) |>
+    dplyr::arrange(dplyr::desc(count))
 
   annos_per_image_vec <- annos_per_image_tbl$annotation_count
   bbox_areas <- annotations_tbl$area
@@ -206,6 +234,11 @@ annotation_diagnostics <- function(annotation_json,
       "Annotations per image (max)" = max_annos,
       "Categories" = n_categories
     ))
+
+    if (nrow(category_summary_tbl) > 0) {
+      cli::cli_h3("Category Counts")
+      cli::cli_dl(stats::setNames(as.character(category_summary_tbl$count), category_summary_tbl$name))
+    }
 
     cli::cli_h3("Object Size Distribution")
     if (nrow(bbox_summary_tbl) > 0) {
@@ -262,7 +295,7 @@ annotation_diagnostics <- function(annotation_json,
     n_categories = n_categories,
     annos_per_image_tbl = annos_per_image_tbl,
     bbox_summary = bbox_summary_tbl,
-    category_counts_tbl = category_counts_tbl,
+    category_counts_tbl = category_summary_tbl,
     annotations = annotations_tbl,
     warnings = warnings,
     summary_stats = list(

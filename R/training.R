@@ -150,7 +150,7 @@ resolve_version <- function(base_name, output_dir, remote_base_dir = NULL, ssh_t
 #' @param local_output_dir Local directory to save trained model (default: `Detectron2_Models`).
 #' @param auto_version Auto-increment version suffix if output_name exists (default: TRUE).
 #' @param publish_after_train Whether to publish (pin) the trained model to a board.
-#' @param model_board pins board for model storage (if NULL and `publish_after_train=TRUE`, uses [pg_board()]).
+#' @param model_board pins board for model storage (if NULL and `publish_after_train=TRUE`, uses [pg_board_user()]).
 #' @param model_description Optional description to include with the published model.
 #' @return Path to the trained model directory.
 #' @export
@@ -223,13 +223,11 @@ train_model <- function(data_dir,
   cli::cli_alert_success("Training completed in {duration_mins} minute{?s}.")
   cli::cli_alert_info("Model saved to: {.path {result}}")
 
-  if (config$publish_after_train) {
-    publish_trained_model(
-      model_dir = result,
-      config = config,
-      duration_mins = duration_mins
-    )
-  }
+  finalize_trained_model(
+    model_dir = result,
+    config = config,
+    duration_mins = duration_mins
+  )
 
   return(result)
 }
@@ -269,6 +267,25 @@ prepare_training_config <- function(data_dir,
   local_output_dir <- fs::path_abs(fs::path_norm(local_output_dir))
 
   validate_dataset(data_dir, quiet = TRUE)
+
+  run_id <- format(Sys.time(), "%Y%m%d%H%M%S")
+
+  train_categories <- tryCatch({
+    anno <- jsonlite::read_json(fs::path(data_dir, "train", "_annotations.coco.json"))
+    cats <- anno$categories
+    if (is.null(cats)) list() else cats
+  }, error = function(e) list())
+
+  class_names <- if (length(train_categories) > 0) {
+    vals <- purrr::map_chr(train_categories, function(cat) {
+      nm <- cat$name
+      if (is.null(nm)) NA_character_ else as.character(nm)
+    })
+    vals <- vals[!is.na(vals) & nzchar(vals)]
+    unique(vals)
+  } else {
+    character()
+  }
 
   if (!grepl("^[A-Za-z0-9._-]{1,64}$", output_name)) {
     cli::cli_abort("Invalid output_name. Use only letters, numbers, ., _, - (max 64 chars).")
@@ -336,7 +353,9 @@ prepare_training_config <- function(data_dir,
     publish_after_train = publish_after_train,
     model_board = model_board,
     model_description = model_description,
-    lr_method = lr_info$method
+    lr_method = lr_info$method,
+    class_names = class_names,
+    run_id = run_id
   )
 }
 
@@ -433,40 +452,70 @@ build_training_display <- function(output_name,
 }
 
 
-publish_trained_model <- function(model_dir, config, duration_mins) {
-  cli::cli_h2("Model Publishing")
+finalize_trained_model <- function(model_dir, config, duration_mins) {
+  cli::cli_h2("Model Artifacts")
 
-  training_metadata <- list(
+  metadata <- list(
     data_dir               = as.character(config$data_dir),
     num_classes            = config$num_classes,
+    class_names            = config$class_names,
     backbone               = config$backbone,
     freeze_at              = config$freeze_at,
     max_iter               = config$max_iter,
     learning_rate          = config$learning_rate,
     lr_method              = config$lr_method,
     ims_per_batch          = config$ims_per_batch,
+    num_workers            = config$num_workers,
     device                 = config$device,
+    eval_period            = config$eval_period,
+    checkpoint_period      = config$checkpoint_period,
     training_duration_mins = duration_mins,
-    training_mode          = if (identical(config$mode, "local")) "Local" else paste0("HPC (", config$hpc_host, ")")
+    training_mode          = if (identical(config$mode, "local")) "Local" else paste0("HPC (", config$hpc_host, ")"),
+    run_id                 = config$run_id,
+    prepared_at            = pg_model_iso_time()
   )
-  if (!is.null(config$hpc_host) && config$hpc_host != "") {
-    training_metadata$hpc_host <- config$hpc_host
-    training_metadata$gpus <- config$gpus
+
+  if (!is.null(config$hpc_host) && nzchar(config$hpc_host)) {
+    metadata$hpc_host <- config$hpc_host
+    metadata$gpus <- config$gpus
+  }
+  if (!is.null(config$model_description)) {
+    metadata$description <- config$model_description
   }
 
-  tryCatch({
-    board_to_use <- if (!is.null(config$model_board)) config$model_board else pg_board()
-    publish_model(
-      model_dir = model_dir,
-      name      = config$output_name,
-      board     = board_to_use,
-      metadata  = training_metadata,
-      include_metrics = TRUE
-    )
-    if (!is.null(config$model_description)) cli::cli_alert_info(config$model_description)
-  }, error = function(e) {
-    cli::cli_warn("Failed to publish model: {e$message}")
-  })
+  manifest <- pg_model_prepare_manifest(
+    model_dir = model_dir,
+    model_id = config$output_name,
+    version = config$run_id,
+    metadata = metadata,
+    include_metrics = TRUE
+  )
+  manifest_path <- fs::path(model_dir, "manifest.json")
+  pg_model_write_manifest(model_dir, manifest)
+  cli::cli_alert_success("Manifest written: {.path {manifest_path}}")
+
+  if (isTRUE(config$publish_after_train)) {
+    cli::cli_h2("Model Publishing")
+    board_to_use <- if (!is.null(config$model_board)) config$model_board else pg_board_user()
+    tryCatch({
+      publish_result <- pg_model_publish(
+        model_dir = model_dir,
+        model_id  = config$output_name,
+        board     = board_to_use,
+        manifest  = manifest,
+        include_metrics = TRUE,
+        write_manifest = TRUE
+      )
+      if (!is.null(config$model_description)) cli::cli_alert_info(config$model_description)
+      if (!inherits(board_to_use, "pins_board_url")) {
+        cli::cli_alert_success("Board manifest updated.")
+      }
+    }, error = function(e) {
+      cli::cli_warn("Failed to publish model: {e$message}")
+    })
+  }
+
+  invisible(manifest)
 }
 
 run_local_training <- function(config) {
@@ -781,4 +830,3 @@ hpc_download_results <- function(setup) {
 
   artifact_dir
 }
-

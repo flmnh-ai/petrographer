@@ -16,7 +16,7 @@
 #' @param device Device to use: 'cpu', 'cuda', 'mps' (default: 'cpu').
 #' @param model_name Optional pin name to load from a board.
 #' @param version Specific version to load when using pins (NULL for latest).
-#' @param board Optional pins board (defaults to [pg_board()]).
+#' @param board Optional pins board override; when NULL, the hosted hub is used if available.
 #' @param use_best If TRUE (default), load `model_best.pth` when available instead of `model_final.pth`.
 #'   The best model is selected by BestCheckpointer during training based on validation segm/AP.
 #' @return A `PetrographyModel` object.
@@ -29,46 +29,72 @@ load_model <- function(model_path = NULL,
                        version = NULL,
                        board = NULL,
                        use_best = TRUE) {
+  manifest <- NULL
+  pin_meta <- NULL
+  cache_dir <- NULL
+
   # Resolve pin-based loading
   if (!is.null(model_name)) {
-    b <- if (!is.null(board)) board else pg_board()
-    resolved <- get_model(model_name, version = version, board = b)
+    resolved <- pg_model_from_pretrained(model_name, version = version, board = board, use_best = use_best)
     model_path <- resolved$model_path
     config_path <- resolved$config_path
+    manifest <- resolved$manifest
+    pin_meta <- resolved$pin_meta
+    cache_dir <- resolved$cache_dir
   } else if (!is.null(model_path) && !fs::file_exists(model_path) && !grepl("\\.pth$", model_path)) {
-    # If a non-existent path provided, treat it as a pin name
-    b <- if (!is.null(board)) board else pg_board()
-    resolved <- get_model(model_path, version = version, board = b)
+    resolved <- pg_model_from_pretrained(model_path, version = version, board = board, use_best = use_best)
     model_path <- resolved$model_path
     config_path <- resolved$config_path
+    manifest <- resolved$manifest
+    pin_meta <- resolved$pin_meta
+    cache_dir <- resolved$cache_dir
+  } else if (!is.null(model_path) && fs::is_dir(model_path)) {
+    dir_manifest <- pg_model_resolve_manifest(model_path)
+    if (!is.null(dir_manifest)) {
+      manifest <- dir_manifest
+      model_dir <- fs::path_abs(fs::path_norm(model_path))
+      if (isTRUE(use_best) && !is.null(manifest$artifacts$model_best)) {
+        candidate <- fs::path(model_dir, manifest$artifacts$model_best)
+        if (fs::file_exists(candidate)) {
+          cli::cli_alert_info("Using best checkpoint: {.path {fs::path_file(candidate)}}")
+          model_path <- candidate
+        } else {
+          cli::cli_alert_info("Best checkpoint not found, using final checkpoint")
+          model_path <- fs::path(model_dir, pg_coalesce(manifest$artifacts$model_final, "model_final.pth"))
+        }
+      } else {
+        model_path <- fs::path(model_dir, pg_coalesce(manifest$artifacts$model_final, "model_final.pth"))
+      }
+      if (is.null(config_path)) {
+        config_path <- fs::path(model_dir, pg_coalesce(manifest$artifacts$config, "config.yaml"))
+      }
+    } else {
+      # Legacy folder layout
+      if (use_best) {
+        best_model <- fs::path(model_path, "model_best.pth")
+        if (fs::file_exists(best_model)) {
+          cli::cli_alert_info("Using best checkpoint: {.path {fs::path_file(best_model)}}")
+          model_path <- best_model
+        } else {
+          cli::cli_alert_info("Best checkpoint not found, using final checkpoint")
+          model_path <- fs::path(model_path, "model_final.pth")
+        }
+      } else {
+        model_path <- fs::path(model_path, "model_final.pth")
+      }
+      if (is.null(config_path)) {
+        config_path <- fs::path(fs::path_dir(model_path), "config.yaml")
+      }
+    }
   }
 
-  # Standard file-based loading
+  # Standard file-based fallback
   cache <- get_model_cache_dir()
   default_model <- fs::path(cache, "model_final.pth")
   default_config <- fs::path(cache, "config.yaml")
 
   if (is.null(model_path)) {
     model_path <- default_model
-  } else if (fs::is_dir(model_path)) {
-    # If directory path provided, look for best or final model
-    if (use_best) {
-      best_model <- fs::path(model_path, "model_best.pth")
-      if (fs::file_exists(best_model)) {
-        cli::cli_alert_info("Using best checkpoint: {.path {fs::path_file(best_model)}}")
-        model_path <- best_model
-      } else {
-        cli::cli_alert_info("Best checkpoint not found, using final checkpoint")
-        model_path <- fs::path(model_path, "model_final.pth")
-      }
-    } else {
-      model_path <- fs::path(model_path, "model_final.pth")
-    }
-
-    # Also look for config in the directory
-    if (is.null(config_path)) {
-      config_path <- fs::path(fs::path_dir(model_path), "config.yaml")
-    }
   }
 
   if (is.null(config_path)) config_path <- default_config
@@ -91,7 +117,10 @@ load_model <- function(model_path = NULL,
     model_path = model_path,
     config_path = config_path,
     confidence = confidence,
-    device = device
+    device = device,
+    manifest = manifest,
+    pin_meta = pin_meta,
+    cache_dir = cache_dir
   )
   class(model) <- "PetrographyModel"
   return(model)
@@ -299,4 +328,3 @@ compare_models <- function(model_names,
 
   invisible(result)
 }
-
