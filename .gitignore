@@ -53,3 +53,4 @@ src/__pycache__/
 .Rproj.user
 docs
 /vignettes/model-library_files
+/pkgdown

@@ -4,6 +4,8 @@
 #'
 #' This board lives in the user's filesystem (e.g. Dropbox). It is writable and
 #' versioned. Set `PETRO_PINS_PATH` to override the default path.
+#' @param path Optional override for the board root directory.
+#' @return A `pins_board` object pointing at the local folder.
 #' @export
 pg_board_user <- function(path = Sys.getenv("PETRO_PINS_PATH", "")) {
   if (!requireNamespace("pins", quietly = TRUE)) {
@@ -17,6 +19,12 @@ pg_board_user <- function(path = Sys.getenv("PETRO_PINS_PATH", "")) {
   pins::board_folder(path, versioned = TRUE)
 }
 
+#' pkgdown pins board
+#'
+#' Convenience helper that points to the pkgdown assets directory. Used when
+#' publishing models/datasets for the documentation site.
+#' @param path Filesystem path for the pkgdown board (default `pkgdown/assets/pins`).
+#' @return A `pins_board` object.
 #' @export
 pg_board_pkgdown <- function(path = fs::path("pkgdown", "assets", "pins")) {
   if (!requireNamespace("pins", quietly = TRUE)) {
@@ -31,6 +39,8 @@ pg_board_pkgdown <- function(path = fs::path("pkgdown", "assets", "pins")) {
 #'
 #' Uses `board_url()` backed by a manifest stored at the given URL. Requires
 #' `PETRO_PINS_URL` to be set. Downloads cache into the petrographer model cache.
+#' @param url Hosted board URL (defaults to `PETRO_PINS_URL`).
+#' @return A read-only `pins_board` object.
 #' @export
 pg_board_hub <- function(url = Sys.getenv("PETRO_PINS_URL", "")) {
   if (!nzchar(url)) {
@@ -176,6 +186,12 @@ pg_model_bundle <- function(model_dir,
   }
   if (include_metrics && !is.null(manifest$artifacts$metrics)) {
     files_core <- c(files_core, fs::path(model_dir, manifest$artifacts$metrics))
+  }
+  if (!is.null(manifest$metadata$preview_image)) {
+    preview_path <- fs::path(model_dir, manifest$metadata$preview_image)
+    if (fs::file_exists(preview_path)) {
+      files_core <- c(files_core, preview_path)
+    }
   }
   files_core <- unique(c(files_core, additional_files))
   pg_model_safe_copy(files_core, bundle_dir)
