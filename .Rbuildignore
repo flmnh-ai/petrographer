@@ -10,6 +10,8 @@
 ^pkgdown(/|$)
 ^\.github(/|$)
 
+^vignettes/.+_files(/|$)
+
 ^archived(/|$)
 ^data(/|$)
 ^results(/|$)

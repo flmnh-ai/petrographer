@@ -4,14 +4,18 @@
 \alias{validate_dataset}
 \title{Validate a COCO-style dataset directory}
 \usage{
-validate_dataset(data_dir)
+validate_dataset(data_dir, quiet = FALSE)
 }
 \arguments{
 \item{data_dir}{Directory containing 'train' and 'valid' subdirectories}
+
+\item{quiet}{If TRUE, suppress CLI output while still returning diagnostics}
 }
 \value{
-A list with validation flags, counts, and size metrics
+A list with validation flags, counts, size metrics, and diagnostics
 }
 \description{
-Validate a COCO-style dataset directory
+Performs existence checks for expected splits and annotations, then runs
+annotation diagnostics (counts, size distribution, potential issues) for
+each split.
 }

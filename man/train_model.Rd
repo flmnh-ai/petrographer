@@ -9,7 +9,7 @@ train_model(
   output_name,
   num_classes,
   backbone = "resnet50",
-  freeze_at = 1,
+  freeze_at = 2,
   max_iter = 12000,
   learning_rate = NULL,
   device = "cuda",
@@ -25,7 +25,6 @@ train_model(
   hpc_user = NULL,
   hpc_base_dir = Sys.getenv("PETROGRAPHER_HPC_BASE_DIR", ""),
   local_output_dir = here::here("Detectron2_Models"),
-  rsync_mode = c("update", "mirror"),
   auto_version = TRUE,
   publish_after_train = FALSE,
   model_board = NULL,
@@ -77,13 +76,11 @@ If a number is provided, uses that exact value for the head (backbone still gets
 
 \item{local_output_dir}{Local directory to save trained model (default: \code{Detectron2_Models}).}
 
-\item{rsync_mode}{Data sync mode: 'update' (default) or 'mirror' (adds --delete).}
-
 \item{auto_version}{Auto-increment version suffix if output_name exists (default: TRUE).}
 
 \item{publish_after_train}{Whether to publish (pin) the trained model to a board.}
 
-\item{model_board}{pins board for model storage (if NULL and \code{publish_after_train=TRUE}, uses \code{\link[=pg_board]{pg_board()}}).}
+\item{model_board}{pins board for model storage (if NULL and \code{publish_after_train=TRUE}, uses \code{\link[=pg_board_user]{pg_board_user()}}).}
 
 \item{model_description}{Optional description to include with the published model.}
 }

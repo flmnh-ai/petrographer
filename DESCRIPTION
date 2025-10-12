@@ -30,6 +30,7 @@ Imports:
     reticulate,
     stringr,
     tibble,
+    base64enc,
 Suggests: 
     here,
     magick,

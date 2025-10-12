@@ -29,7 +29,7 @@ If a directory path is provided, will look for \code{model_best.pth} (if \code{u
 
 \item{version}{Specific version to load when using pins (NULL for latest).}
 
-\item{board}{Optional pins board (defaults to \code{\link[=pg_board]{pg_board()}}).}
+\item{board}{Optional pins board override; when NULL, the hosted hub is used if available.}
 
 \item{use_best}{If TRUE (default), load \code{model_best.pth} when available instead of \code{model_final.pth}.
 The best model is selected by BestCheckpointer during training based on validation segm/AP.}
