@@ -1,0 +1,146 @@
+---
+title: "Loading Petrographer Models from Pretrained Bundles"
+author: "petrographer team"
+format:
+  html:
+    code-fold: true
+    toc: true
+editor: visual
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+library(petrographer)
+if (requireNamespace("pins", quietly = TRUE)) {
+  library(pins)
+}
+```
+
+## Why a Manifest + Bundle workflow?
+
+`train_model()` now writes a `manifest.json` alongside the Detectron2 files. The manifest captures:
+
+- Model id and version (timestamp-based run id)
+- Paths to artifacts (`model_final.pth`, `model_best.pth`, `config.yaml`, `metrics.json`)
+- Training metadata (backbone, freeze depth, batch size, etc.)
+- Any custom notes you pass via `model_description`
+
+`pg_model_publish()` bundles those files into a tarball, uploads it to your writable board (typically a Dropbox folder), and stores the manifest as pin metadata. `pg_install_pretrained()` mirrors the HuggingFace-style `from_pretrained()` flow: it downloads the bundle on first use, unpacks it into `~/.cache/petrographer/models/<model-id>/<pin-version>/`, reuses cached copies afterwards, and returns paths + metadata.
+
+This notebook walks through that workflow.
+
+## Configure a Pins Board
+
+For publishing, we use a writable board rooted in a local folder (e.g. a Dropbox directory that you share read-only on the web). `pg_board_user()` creates it if needed.
+
+```{r}
+board <- pg_board_user()
+board
+```
+
+To serve pretrained models to users, publish the contents of this folder to a URL (for example, a Dropbox “view-only” link) and set `PETRO_PINS_URL` to that URL. Consumers then call `pg_install_pretrained()` with no additional configuration.
+
+## Publish an Existing Model Directory
+
+Assume you have a trained model in `Detectron2_Models/<name>`. The training pipeline now writes `manifest.json` automatically, but `pg_model_publish()` will regenerate it if needed.
+
+```{r}
+example_dir <- "Detectron2_Models/inclusions_v2"
+
+if (dir.exists(example_dir)) {
+  publish_result <- pg_model_publish(
+    model_dir = example_dir,
+    model_id  = "petrography/inclusions_v2",
+    board     = board,
+    metadata  = list(notes = "Demo publish from notebook")
+  )
+  publish_result$manifest[c("model_id", "version", "metadata")]
+} else {
+  cli::cli_alert_warning("Example directory not found. Run train_model() first or adjust example_dir.")
+}
+```
+
+After publishing, `pg_model_publish()` automatically refreshes the board manifest so a hosted `board_url()` can discover new versions.
+
+## Inspect Manifest Without Downloading
+
+`pg_model_info()` reads the manifest from pin metadata when available and falls back to downloading the bundle if necessary.
+
+```{r}
+if (exists("publish_result")) {
+  manifest_preview <- pg_model_info("petrography/inclusions_v2", board = board)
+  str(manifest_preview[c("model_id", "version", "metadata")], max.level = 1)
+}
+```
+
+## Load a Model From Pretrained
+
+With `PETRO_PINS_URL` set, `pg_install_pretrained()` downloads (or reuses cached) weights and returns resolved paths plus metadata. `load_model(model_name = …)` delegates to it automatically.
+
+```{r}
+if (exists("publish_result")) {
+  Sys.setenv(PETRO_PINS_URL = Sys.getenv("PETRO_PINS_URL", ""))
+  resolved <- pg_install_pretrained("petrography/inclusions_v2")
+  resolved$cache_dir
+  resolved$manifest$metadata$training_mode
+}
+```
+
+Now instantiate a SAHI-backed `PetrographyModel` directly from the pin:
+
+```{r}
+if (exists("publish_result")) {
+  model <- load_model(model_name = "petrography/inclusions_v2", device = "cpu")
+  model$manifest$metadata[c("backbone", "freeze_at", "ims_per_batch")]
+}
+```
+
+The object keeps a reference to the manifest and pin metadata, so you can log or audit the run configuration later.
+
+## Reusing the Local Cache
+
+Subsequent calls reuse cached weights. Inspect the cache root with `pg_model_cache_root()`.
+
+```{r}
+pg_model_cache_root()
+```
+
+```{r}
+if (exists("publish_result")) {
+  fs::dir_tree(pg_model_cache_root(), recurse = 2)
+}
+```
+
+To force a refresh use `pins::pin_delete()` followed by another `pg_model_from_pretrained()` call, or manually remove the cache directory.
+
+## Next Steps
+
+- After each training run, call `train_model(..., publish_after_train = TRUE, model_board = pg_board_user())` to save and version models automatically.
+
+## Working with Datasets
+
+Datasets can be published and consumed with the same helpers.
+
+```{r}
+pg_dataset_publish(
+  dataset_dir = here::here("data/processed/inclusions_sliced"),
+  dataset_id = "datasets/inclusions_sliced"
+)
+```
+
+On another machine (or after clearing cache), install from the hosted URL:
+
+```{r}
+Sys.setenv(PETRO_PINS_URL = Sys.getenv("PETRO_PINS_URL", ""))
+if (nzchar(Sys.getenv("PETRO_PINS_URL"))) {
+  ds <- pg_dataset_from_pretrained("datasets/inclusions_sliced")
+  ds$dataset_dir
+}
+```
+
+- Run `pg_publish_pkgdown_manifest()` (or `pg_model_publish(write_manifest = TRUE)`) to refresh the hosted manifest before redeploying your pkgdown site or Dropbox link.
+- Adopt a naming convention (`petrography/<dataset>/<variant>`) so teams can find models quickly via `pins::pin_search()`.
+
+This completes the tour of the manifest-driven pins workflow.

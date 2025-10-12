@@ -10,18 +10,11 @@ Training **inclusions detection** model for petrographic analysis with extended 
 ```{r setup, message=FALSE}
 library(tidyverse)
 library(magick)
+library(jsonlite)
 library(fs)
 library(here)
 library(hipergator)
 library(petrographer)
-library(hipergator)
-
-# Configure HPC settings once
-hpg_configure(
-  host = "hpg",
-  user = Sys.getenv("USER"),
-  base_dir = "/blue/nicolas.gauthier/petrographer"
-)
 
 # Configure HPC settings once
 hpg_configure(
@@ -46,11 +39,10 @@ model_path <- train_model(
   num_workers = 16,
   hpc_cpus_per_task = 18,
   hpc_mem = "96gb",
-  eval_period = 200,
-  max_iter = 2000,
+  eval_period = 150,
+  max_iter = 1500,
   num_classes = 1,
-  freeze_at = 2,
-  learning_rate = 1e-3
+  learning_rate = 1e-4
 )
 ```
 
@@ -74,12 +66,12 @@ val_diag <- diagnose_annotations(
 library(ggplot2)
 
 train_anno_dist <- tibble(
-  count = train_diag$annos_per_image,
+  count = train_diag$annos_per_image_tbl$annotation_count,
   split = "train"
 )
 
 val_anno_dist <- tibble(
-  count = val_diag$annos_per_image,
+  count = val_diag$annos_per_image_tbl$annotation_count,
   split = "valid"
 )
 
@@ -101,12 +93,12 @@ bind_rows(train_anno_dist, val_anno_dist) %>%
 
 # Object size distribution
 train_size_dist <- tibble(
-  area = train_diag$bbox_areas,
+  area = train_diag$annotations$area,
   split = "train"
 )
 
 val_size_dist <- tibble(
-  area = val_diag$bbox_areas,
+  area = val_diag$annotations$area,
   split = "valid"
 )
 
@@ -302,40 +294,24 @@ cat(sprintf("Mean confidence: %.3f\n", mean(test_result$confidence)))
 ```
 
 
-```{r}
-library(magick)
+```{r ground-truth-plot}
+
 pred_image <- test_image |>
   path_file() |>
   path_ext_remove() |>
   paste0('_prediction.png')
 
-image_read(test_image) |> plot()
+magick::image_read(test_image) |> plot()
 here('results/inclusions_v3_test', pred_image) |>
-  image_read() |>
+  magick::image_read() |>
   plot()
-```
-```{r}
-test_image <- here('data/lyons_annotations/img') |>
-dir_ls()
 
-test_result <- predict_image(
-  image_path = test_image[[6]],
-  model = model,
-  slice_size = 1024,
-  output_dir = here('results/inclusions_v3_test')
+pg_plot_annotations(
+  image_path = test_image,
+  annotation_json = fs::path(data_dir, "valid", "_annotations.coco.json"),
+  label_cex = 0.6
 )
-
-pred_image <- test_image[[6]] |>
-  path_file() |>
-  path_ext_remove() |>
-  paste0('_prediction.png')
-'../notebooks/results/
-here('results/inclusions_v3_test/) |>
-  image_read() |>
-  plot()
 ```
-
-I need to slice the trianing data!
 ## Summary
 
 ```{r summary}

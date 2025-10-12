@@ -13,48 +13,37 @@ editor: visual
 #| message: false
 #| warning: false
 library(petrographer)
-# pins is optional; load if available for richer printing in this notebook
-if (requireNamespace("pins", quietly = TRUE)) {
-  library(pins)
-}
+library(pins)
 ```
 
 ## Overview
 
-This notebook shows how to create and maintain a simple "model zoo" using the pins package:
+This notebook shows how to create and maintain a simple "model zoo" using pins:
 
-- Configure a board (local folder, shared folder, S3, or Posit Connect)
-- Pin trained petrographer models and their metadata
-- Discover available models and versions
-- Load models from pins for prediction
-- Housekeeping: delete old pins
+-   Configure a writable board (e.g., a Dropbox folder)
+-   Publish trained petrographer models and metadata
+-   Discover available models and versions
+-   Load models from a hosted read-only URL
+-   Refresh the manifest for web hosting
 
-pins saves versioned artifacts and handles caching. For large files (> 500MB) prefer boards like S3 or a shared drive.
+pins keeps artifacts versioned and caches downloads automatically.
 
 ## Configure a Board
 
 Choose a board based on how you share models:
 
 ```{r}
-# Local board (per-machine, good for experiments)
-board_local <- pg_board()
+# Writable board (defaults to ~/Dropbox/petrographer-pins)
+board_local <- pg_board_user()
 board_local
 ```
 
 ```{r}
-# Shared folder (Dropbox / network drive)
-# Uncomment and set a path visible to your team
-# board_shared <- pins::board_folder("~/Dropbox/petrographer-models", versioned = TRUE)
-```
-
-```{r}
-# Amazon S3 (requires credentials via env vars)
-# board_s3 <- pins::board_s3(bucket = Sys.getenv("PETRO_S3_BUCKET"), prefix = "petrographer", versioned = TRUE)
-```
-
-```{r}
-# Posit Connect (enterprise sharing)
-# board_connect <- pins::board_connect()
+# Hosted read-only board (requires PETRO_PINS_URL to be set)
+if (nzchar(Sys.getenv("PETRO_PINS_URL"))) {
+  board_hub <- pg_board_hub()
+  board_hub
+}
 ```
 
 ## Pin a Trained Model
@@ -63,17 +52,13 @@ Pin a model directory that contains `model_final.pth` and `config.yaml` (created
 
 ```{r}
 # Example: pin an existing trained model directory
-example_model_dir <- "Detectron2_Models/shell_detector_v3"  # adjust to your model
+example_model_dir <- here::here("Detectron2_Models/shell_detector_v3")  # adjust to your model
 if (dir.exists(example_model_dir)) {
-  meta <- list(
-    notes = "Pinned from notebook",
-    owner = Sys.info()[["user"]]
-  )
   publish_model(
     model_dir = example_model_dir,
     name = "shell_detector_v3",
     board = board_local,
-    metadata = meta,
+    metadata = list(owner = Sys.info()[["user"]]),
     include_metrics = TRUE
   )
 }
@@ -99,13 +84,13 @@ Pin automatically right after training by passing `publish_after_train = TRUE` t
 List pins on the board and inspect metadata:
 
 ```{r}
-available <- if (requireNamespace("pins", quietly = TRUE)) pins::pin_list(board_local) else character()
+available <- pin_list(board_local)
 available
 ```
 
 ```{r}
-if (requireNamespace("pins", quietly = TRUE) && length(available)) {
-  info <- pins::pin_meta(board_local, available[[1]])
+if (length(avail <- available)) {
+  info <- pins::pin_meta(board_local, avail[[1]])
   str(info$user)
 }
 ```
@@ -119,6 +104,27 @@ if (requireNamespace("pins", quietly = TRUE)) {
 }
 ```
 
+## Publish Datasets
+
+```{r}
+if (dir.exists(here::here("data/processed/inclusions_sliced"))) {
+  pg_dataset_publish(
+    dataset_dir = here::here("data/processed/inclusions_sliced"),
+    dataset_id = "datasets/inclusions_sliced",
+    board = board_local
+  )
+}
+```
+
+Install on another machine (read-only):
+
+```{r}
+if (nzchar(Sys.getenv("PETRO_PINS_URL"))) {
+  ds <- pg_dataset_from_pretrained("datasets/inclusions_sliced")
+  ds$dataset_dir
+}
+```
+
 ## Versioning
 
 Most boards support versions. With `pins`, each write creates a new version (when versioning is enabled on the board).
@@ -129,14 +135,14 @@ if (requireNamespace("pins", quietly = TRUE) && length(available)) {
 }
 ```
 
-## Load Models from Pins
+## Load Models from the Hosted Hub
 
-Load a pinned model either explicitly or via `load_model()` auto-detection.
+Set `PETRO_PINS_URL` to the read-only link (e.g., Dropbox) and install models into the cache.
 
 ```{r}
-if (length(available)) {
-  gm <- get_model(available[[1]], board = board_local)
-  mdl <- load_model(model_name = available[[1]], confidence = 0.5, device = "cpu")
+if (nzchar(Sys.getenv("PETRO_PINS_URL"))) {
+  pg_install_pretrained("shell_detector_v3")
+  mdl <- load_model(model_name = "shell_detector_v3", device = "cpu")
 }
 ```
 
@@ -162,6 +168,10 @@ if (FALSE && requireNamespace("pins", quietly = TRUE) && length(available) > 0) 
 
 ## Tips
 
-- Prefer versioned boards (`versioned = TRUE`) so you can reproduce past runs.
-- For large models or many versions, consider S3 instead of folder boards.
-- Store concise training metadata with `publish_model()` to make discovery easier.
+## Refresh Manifest for Hosting
+
+Call `pg_publish_pkgdown_manifest()` after publishing so the hosted board (exposed via `PETRO_PINS_URL`) advertises new versions. Rebuild your pkgdown site or let Dropbox sync the updated `_pins.yaml` file.
+
+-   Prefer versioned boards (`versioned = TRUE`) so you can reproduce past runs.
+-   Keep `_pins.yaml` up to date (via `pg_publish_pkgdown_manifest()`) so board_url() consumers see fresh versions.
+-   Store concise training metadata with `publish_model()` to make discovery easier.

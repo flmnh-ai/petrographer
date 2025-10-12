@@ -67,7 +67,6 @@ model_dir <- train_model(
 Safety
 
 - No remote deletion is performed automatically.
-- Use `rsync_mode = "mirror"` to avoid accumulating stale files across reruns.
 
 ### Key Features
 
@@ -331,8 +330,8 @@ Basic flow:
 ```r
 library(petrographer)
 
-# 1) Configure a board (defaults to local, versioned)
-board <- pg_board()  # or set PETRO_PINS_PATH or PETRO_S3_BUCKET env vars
+# 1) Configure a writable board (defaults to ~/Dropbox/petrographer-pins)
+board <- pg_board_user()  # override with PETRO_PINS_PATH if you prefer a different folder
 
 # 2) Publish a trained model directory
 publish_model(
@@ -343,7 +342,7 @@ publish_model(
   include_metrics = TRUE
 )
 
-# 3) Load a model by name
+# 3) Load a model by name (uses PETRO_PINS_URL if set, otherwise the local board)
 mdl <- load_model(model_name = "shell_detector_v3", device = "cpu")
 
 # 4) Discover pins (optional; uses pins directly)
@@ -361,6 +360,54 @@ train_model(
   output_name = "shell_detector_v4",
   num_classes = 5,
   publish_after_train = TRUE,
-  model_board = pg_board()
+  model_board = pg_board_user()
 )
 ```
+
+Download a hosted pretrained model (read-only hub served from a shared URL):
+
+```r
+Sys.setenv(PETRO_PINS_URL = "https://www.dropbox.com/scl/fo/.../pins?dl=1")
+pg_install_pretrained("petrography/inclusions")
+mdl <- load_model(model_name = "petrography/inclusions", device = "cpu")
+```
+
+After updating the board that feeds your pkgdown or Dropbox site, run:
+
+```r
+pg_publish_pkgdown_manifest()
+# then rebuild your pkgdown site so the new _pins.yaml is deployed
+```
+
+Publish a dataset (images + COCO annotations) the same way:
+Before building the pkgdown site, generate the catalog data used on the
+Model Library page:
+
+```r
+pg_pkgdown_refresh()
+```
+
+
+```r
+pg_dataset_publish(
+  dataset_dir = "data/processed/inclusions_shell_sliced",
+  dataset_id = "datasets/inclusions_shell"
+)
+```
+
+Consumers can install the dataset bundle from the hosted hub:
+
+```r
+Sys.setenv(PETRO_PINS_URL = "https://www.dropbox.com/scl/fo/.../pins?dl=1")
+pg_install_dataset("datasets/inclusions_shell")
+installed <- pg_dataset_from_pretrained("datasets/inclusions_shell")
+installed$dataset_dir
+```
+Add an optional `preview.png` inside your dataset directory so the catalog shows a thumbnail.
+
+```r
+pg_save_dataset_preview("data/processed/inclusions_shell_sliced", split = "valid")
+```
+
+Use `pg_plot_dataset_image()` or `pg_plot_annotations()` to inspect samples interactively.
+

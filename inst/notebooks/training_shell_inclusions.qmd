@@ -13,6 +13,9 @@ library(fs)
 library(here)
 library(petrographer)
 library(hipergator)
+library(jsonlite)
+library(ggplot2)
+library(magick)
 
 # Configure HPC settings once
 hpg_configure(
@@ -20,8 +23,10 @@ hpg_configure(
   base_dir = "/blue/nicolas.gauthier/nicolas.gauthier/petrographer"
 )
 
-data_dir <- here("data/processed/inclusion_shell")
+data_dir <- here("data/processed/inclusions_shell_sliced")
+```
 
+```{r}
 # Validate dataset
 validate_dataset(data_dir)
 ```
@@ -32,15 +37,16 @@ validate_dataset(data_dir)
 # Train model - HPC settings configured above
 model_path <- train_model(
   data_dir = data_dir,
-  output_name = "shell_inclusions_v1",
+  output_name = "shell_inclusions",
   num_classes = 3,
-  gpus = 1,
-  eval_period = 200,
-  ims_per_batch = 12,
-  num_workers = 10,
-  hpc_cpus_per_task = 16,
+  eval_period = 500,
+  ims_per_batch = 16,
+  num_workers = 16,
+  hpc_cpus_per_task = 18,
   hpc_mem = "96gb",
-  max_iter = 4000
+  freeze_at = 1,
+  learning_rate = 1e-4,
+  max_iter = 5000
 )
 ```
 
@@ -85,17 +91,18 @@ cat("\n== Testing Model ==\n")
 
 # Load trained model
 model <- load_model(
-  model_path = path(model_path, "model_final.pth"),
+  model_path = path(model_path, "model_best.pth"),
   config_path = path(model_path, "config.yaml")
 )
 
 # Test on validation sample
-val_images <- dir_ls(here(data_dir, "val"), glob = '*.jpg')
+val_images <- dir_ls(here(data_dir, "valid"), glob = '*.jpg')
 
-test_image <- val_images[1]
+test_image <- val_images[100]
 
 test_result <- predict_image(
-  use_slicing = FALSE,
+  use_slicing = F,
+  slice_size = 640,
   image_path = test_image,
   model = model,
   output_dir = here('results/inclusions_shell')
@@ -104,32 +111,24 @@ test_result <- predict_image(
 cat(sprintf("Test image: %s\n", path_file(test_image)))
 cat(sprintf("Objects detected: %d\n", nrow(test_result)))
 cat(sprintf("Mean confidence: %.3f\n", mean(test_result$confidence)))
+
 ```
 
-```{r}
-library(magick)
+```{r ground-truth-visuals}
 pred_image <- test_image |>
   path_file() |>
   path_ext_remove() |>
   paste0('_prediction.png')
 
-image_read(test_image) |> plot()
+magick::image_read(test_image) |> plot()
 here('results/inclusions_shell', pred_image) |>
-  image_read() |>
+  magick::image_read() |>
   plot()
-```
 
-```{r}
-library(magick)
-pred_image <- test_image |>
-  path_file() |>
-  path_ext_remove() |>
-  paste0('_prediction.png')
-
-image_read(test_image) |> plot()
-here('results/inclusions_shell', pred_image) |>
-  image_read() |>
-  plot()
+plot_ground_truth(
+  image_path = test_image,
+  annotation_json = fs::path(data_dir, "valid", "_annotations.coco.json")
+)
 ```
 
 ## Summary
