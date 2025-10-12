@@ -121,7 +121,8 @@ def setup_cfg(args):
 def build_augmentations(cfg):
     """Augmentations: flips + color jitter"""
     return [
-        T.RandomFlip(prob=0.5, horizontal=True, vertical=True),
+        T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
+        T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
         T.RandomRotation(angle=[0, 90, 180, 270], sample_style="choice", expand=False),
         T.RandomBrightness(0.8, 1.2),  # ±20% brightness
         T.RandomContrast(0.8, 1.2),    # ±20% contrast
