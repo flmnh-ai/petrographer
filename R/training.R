@@ -55,12 +55,12 @@ suggest_lr <- function(batch_size, freeze_at = 2) {
 #'
 #' @param dataset_id Name of pinned dataset to use for training (preferred).
 #' @param data_dir Path to dataset directory (alternative to dataset_id; will be auto-pinned with temp ID).
-#' @param model_id Name for the trained model (used for pins).
+#' @param model_id Name for the trained model (used for pins). Defaults to `dataset_id` if not provided.
 #' @param num_classes Number of object classes in your dataset.
 #' @param backbone Model backbone: "resnet50" (default), "resnet101", "resnext101", or a full Detectron2 model zoo key.
-#' @param freeze_at Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem; default), 2 (freeze stem + res2).
+#' @param freeze_at Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem), 2 (freeze stem + res2; default).
 #'   Lower values train more layers = slower but better domain adaptation.
-#' @param max_iter Maximum training iterations. Default: 12000.
+#' @param max_iter Maximum training iterations. Default: 2000.
 #' @param learning_rate Learning rate for the detection head. If NULL (default), uses smart
 #'   auto-scaling based on `freeze_at` and batch size. Backbone automatically gets 0.1x this rate.
 #'   If a number is provided, uses that exact value for the head (backbone still gets 0.1x).
@@ -76,11 +76,11 @@ suggest_lr <- function(batch_size, freeze_at = 2) {
 #' @export
 train_model <- function(dataset_id = NULL,
                         data_dir = NULL,
-                        model_id,
+                        model_id = NULL,
                         num_classes,
                         backbone = "resnet50",
                         freeze_at = 2,
-                        max_iter = 12000,
+                        max_iter = 2000,
                         learning_rate = NULL,
                         device = "cuda",
                         eval_period = 1000,
@@ -99,30 +99,45 @@ train_model <- function(dataset_id = NULL,
     cli::cli_abort("Must provide either {.arg dataset_id} or {.arg data_dir}")
   }
 
+  # Default model_id to dataset_id if not provided
+  if (is.null(model_id)) {
+    if (!is.null(dataset_id)) {
+      model_id <- dataset_id
+      cli::cli_alert_info("Using model_id = {.val {model_id}} (same as dataset_id)")
+    } else {
+      cli::cli_abort("Must provide {.arg model_id} when using {.arg data_dir}")
+    }
+  }
+
   resolved_dataset <- if (!is.null(dataset_id)) {
     # Use pinned dataset from persistent board
     list(
       id = dataset_id,
       path = get_dataset_path(dataset_id, board = "local"),
-      board = .get_local_board(),
+      board = .get_dataset_board(),
       is_temp = FALSE
     )
   } else {
     # Auto-pin to local board (persistent, reproducible)
     temp_id <- paste0("_temp_", format(Sys.time(), "%Y%m%d_%H%M%S"))
-    cli::cli_alert_info("Auto-pinning dataset as {.val {temp_id}} (will persist in .petrographer/)")
-    pin_dataset(data_dir, temp_id, board = .get_local_board())
+    cli::cli_alert_info("Auto-pinning dataset as {.val {temp_id}} (will persist in .petrographer/datasets/)")
+    pin_dataset(data_dir, temp_id, board = .get_dataset_board())
     list(
       id = temp_id,
       path = get_dataset_path(temp_id, board = "local"),
-      board = .get_local_board(),
+      board = .get_dataset_board(),
       is_temp = FALSE
     )
   }
 
+  # Capture dataset version for reproducibility
+  dataset_meta <- pins::pin_meta(resolved_dataset$board, resolved_dataset$id)
+  resolved_dataset$version <- dataset_meta$version
+
   config <- prepare_training_config(
     data_dir = resolved_dataset$path,
     dataset_id = resolved_dataset$id,
+    dataset_version = resolved_dataset$version,
     model_id = model_id,
     num_classes = num_classes,
     backbone = backbone,
@@ -170,6 +185,7 @@ train_model <- function(dataset_id = NULL,
 
 prepare_training_config <- function(data_dir,
                                     dataset_id,
+                                    dataset_version,
                                     model_id,
                                     num_classes,
                                     backbone,
@@ -233,6 +249,7 @@ prepare_training_config <- function(data_dir,
     display = display,
     data_dir = data_dir,
     dataset_id = dataset_id,
+    dataset_version = dataset_version,
     model_id = model_id,
     workspace_dir = workspace_dir,
     max_iter = max_iter,
@@ -337,11 +354,10 @@ build_training_display <- function(model_id,
 
 
 finalize_trained_model <- function(model_dir, config, duration_mins) {
-  cli::cli_h2("Pinning Model")
-
   # Build metadata
   metadata <- list(
     dataset_id             = config$dataset_id,
+    dataset_version        = config$dataset_version,
     data_dir               = as.character(config$data_dir),
     num_classes            = config$num_classes,
     class_names            = config$class_names,
@@ -386,8 +402,8 @@ finalize_trained_model <- function(model_dir, config, duration_mins) {
     }
   }
 
-  # Pin the model to local board
-  board <- .get_local_board()
+  # Pin the model to model board
+  board <- .get_model_board()
   tryCatch({
     pin_model(
       model_dir = model_dir,
@@ -395,7 +411,7 @@ finalize_trained_model <- function(model_dir, config, duration_mins) {
       board = board,
       metadata = metadata
     )
-    cli::cli_alert_success("Model pinned as {.val {config$model_id}}")
+    cli::cli_alert_success("Model saved as {.val {config$model_id}}")
     cli::cli_alert_info("Load with: {.code from_pretrained(\"{config$model_id}\")}")
   }, error = function(e) {
     cli::cli_abort("Failed to pin model: {e$message}")
@@ -403,11 +419,45 @@ finalize_trained_model <- function(model_dir, config, duration_mins) {
 
   # Cleanup temp workspace
   if (fs::dir_exists(config$workspace_dir)) {
-    cli::cli_alert_info("Cleaning up workspace: {.path {config$workspace_dir}}")
     fs::dir_delete(config$workspace_dir)
   }
 
   invisible(config$model_id)
+}
+
+#' Parse detectron2 training log for progress
+#'
+#' Extracts iteration and loss information from detectron2 log output.
+#'
+#' @param log_text Character string containing log output
+#' @return List with `iter` and `loss` fields, or NULL if parsing fails
+#' @keywords internal
+parse_detectron2_log <- function(log_text) {
+  lines <- strsplit(log_text, "\n")[[1]]
+
+  # Find lines with iteration info: "iter: XXXX"
+  iter_lines <- lines[grepl("iter:\\s*\\d+", lines)]
+  if (length(iter_lines) == 0) return(NULL)
+
+  # Get latest iteration
+  latest <- tail(iter_lines, 1)
+
+  # Extract iteration number
+  iter_match <- regexpr("iter:\\s*(\\d+)", latest, perl = TRUE)
+  if (iter_match == -1) return(NULL)
+
+  iter_str <- regmatches(latest, iter_match)
+  iter <- as.integer(sub("iter:\\s*", "", iter_str))
+
+  # Extract loss if available
+  loss <- NA
+  loss_match <- regexpr("total_loss:\\s*([0-9.]+)", latest, perl = TRUE)
+  if (loss_match != -1) {
+    loss_str <- regmatches(latest, loss_match)
+    loss <- as.numeric(sub("total_loss:\\s*", "", loss_str))
+  }
+
+  list(iter = iter, loss = loss)
 }
 
 run_local_training <- function(config) {
@@ -480,10 +530,6 @@ train_model_local <- function(data_dir, model_id, max_iter, learning_rate, num_c
   output_dir <- fs::path(workspace_dir, "output")
   fs::dir_create(output_dir)
 
-  cli::cli_alert_info("Starting local training")
-  cli::cli_alert_info("Data: {.path {dataset_dir}}")
-  cli::cli_alert_info("Workspace: {.path {output_dir}}")
-
   python_exe <- reticulate::py_config()$python
   train_script <- system.file("python", "train.py", package = "petrographer")
 
@@ -507,21 +553,11 @@ train_model_local <- function(data_dir, model_id, max_iter, learning_rate, num_c
     "--ims-per-batch", as.character(ims_per_batch)
   )
 
-  display_cmd <- paste(
-    shQuote(python_exe),
-    paste(vapply(args, shQuote, character(1)), collapse = " ")
-  )
-  cli::cli_alert_info("Using Python: {.path {python_exe}}")
-  cli::cli_alert_info("Running training command")
-  cli::cli_code(display_cmd)
-
   res <- processx::run(python_exe, args = args, echo = TRUE, echo_cmd = FALSE, error_on_status = FALSE)
   if (!identical(res$status, 0L)) {
     cli::cli_abort("Training failed with exit code: {res$status}")
   }
 
-  cli::cli_alert_success("Local training completed successfully!")
-  cli::cli_alert_info("Model saved to: {.path {output_dir}}")
   return(output_dir)
 }
 
@@ -550,22 +586,45 @@ train_model_hpc <- function(data_dir, dataset_id, model_id, run_id, max_iter, le
     workspace_dir = workspace_dir
   )
 
-  cli::cli_alert_info("Remote base: {.path {setup$remote$base}}")
-  cli::cli_alert_info("Training command")
-  cli::cli_code(setup$command)
-
-  cli::cli_alert_info("Uploading artifacts to HPC")
+  cli::cli_alert_info("Uploading artifacts")
   hpc_upload_artifacts(setup)
 
   job <- hpc_submit_job(setup)
 
-  cli::cli_alert_info("Waiting for job completion")
-  hipergator::hpg_wait(job)
+  # Set up progress bar with log monitoring
+  remote_log <- fs::path(setup$remote$output, "log.txt")
+  pb_id <- NULL
+
+  # Progress callback
+  update_progress <- function(log_text) {
+    parsed <- parse_detectron2_log(log_text)
+    if (!is.null(parsed) && !is.null(pb_id)) {
+      cli::cli_progress_update(
+        id = pb_id,
+        set = parsed$iter
+      )
+    }
+  }
+
+  # Create progress bar
+  pb_id <- cli::cli_progress_bar(
+    format = "{cli::pb_bar} {cli::pb_current}/{cli::pb_total} iter | ETA: {cli::pb_eta}",
+    total = max_iter,
+    clear = FALSE
+  )
+
+  # Wait with progress monitoring
+  hipergator::hpg_wait(
+    job,
+    log_path = as.character(remote_log),
+    progress_callback = update_progress
+  )
+
+  cli::cli_progress_done(id = pb_id)
 
   cli::cli_alert_info("Downloading results")
   artifact_dir <- hpc_download_results(setup)
 
-  cli::cli_alert_success("HPC training pipeline completed!")
   artifact_dir
 }
 
@@ -582,7 +641,7 @@ hpc_prepare_run <- function(data_dir, dataset_id, model_id, run_id, max_iter, le
     ))
   }
 
-  target <- hipergator::hpg_authenticate()
+  target <- hipergator::hpg_authenticate(quiet = TRUE)
 
   cpus <- if (!is.null(hpc_cpus_per_task)) {
     hpc_cpus_per_task
@@ -687,16 +746,14 @@ hpc_upload_artifacts <- function(setup) {
     fs::path(setup$remote$base, "scripts"),
     fs::path_dir(setup$remote$output)  # models/{model_id}/{run_id}/
   )
-  hipergator::hpg_mkdir(setup$target, remote_dirs)
+  hipergator::hpg_mkdir(setup$target, remote_dirs, quiet = TRUE)
 
   # Upload dataset tar.gz to shared location (rsync skips if unchanged)
-  cli::cli_alert_info("Uploading dataset tar.gz to {.path datasets/{setup$dataset_id}.tar.gz}")
-  hipergator::hpg_upload(setup$target, setup$local$data_dir, setup$remote$dataset_tar)
+  hipergator::hpg_upload(setup$target, setup$local$data_dir, setup$remote$dataset_tar, quiet = TRUE)
 
   # Upload train.py to shared scripts location (rsync skips if unchanged)
-  cli::cli_alert_info("Uploading train.py to {.path scripts/}")
   train_py_path <- fs::path(setup$python_src, "train.py")
-  hipergator::hpg_upload(setup$target, train_py_path, fs::path(setup$remote$scripts, "train.py"))
+  hipergator::hpg_upload(setup$target, train_py_path, fs::path(setup$remote$scripts, "train.py"), quiet = TRUE)
 }
 
 hpc_submit_job <- function(setup) {
@@ -706,7 +763,8 @@ hpc_submit_job <- function(setup) {
     command = setup$command,
     job_name = "petrographer_train",
     working_dir = setup$remote$base,
-    ssh_target = setup$target
+    ssh_target = setup$target,
+    quiet = TRUE
   )
 }
 
