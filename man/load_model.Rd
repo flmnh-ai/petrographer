@@ -2,44 +2,24 @@
 % Please edit documentation in R/model.R
 \name{load_model}
 \alias{load_model}
-\title{Load petrography detection model}
+\title{Load petrography detection model from directory}
 \usage{
-load_model(
-  model_path = NULL,
-  config_path = NULL,
-  confidence = 0.3,
-  device = "cpu",
-  model_name = NULL,
-  version = NULL,
-  board = NULL,
-  use_best = TRUE
-)
+load_model(model_dir, config_path = NULL, confidence = 0.3, device = "cpu")
 }
 \arguments{
-\item{model_path}{Path to trained model weights (ignored if \code{model_name} is supplied or \code{model_path} appears to be a pin name).
-If a directory path is provided, will look for \code{model_best.pth} (if \code{use_best = TRUE}) or \code{model_final.pth}.}
+\item{model_dir}{Path to directory containing model files.
+Will look for \code{model_best.pth}.}
 
-\item{config_path}{Path to model config (ignored if loading from a pin).}
+\item{config_path}{Optional path to model config (auto-detected if NULL).}
 
 \item{confidence}{Confidence threshold (default: 0.3).}
 
 \item{device}{Device to use: 'cpu', 'cuda', 'mps' (default: 'cpu').}
-
-\item{model_name}{Optional pin name to load from a board.}
-
-\item{version}{Specific version to load when using pins (NULL for latest).}
-
-\item{board}{Optional pins board override; when NULL, the hosted hub is used if available.}
-
-\item{use_best}{If TRUE (default), load \code{model_best.pth} when available instead of \code{model_final.pth}.
-The best model is selected by BestCheckpointer during training based on validation segm/AP.}
 }
 \value{
 A \code{PetrographyModel} object.
 }
 \description{
-Loads a Detectron2/SAHI model either from file paths or by pin name via
-the pins registry. When \code{model_name} is supplied (or \code{model_path} does not
-exist and does not end with \code{.pth}), the model is retrieved from a board
-using \code{\link[=get_model]{get_model()}}.
+Loads a Detectron2/SAHI model from a local directory containing model files.
+For pretrained models from the hub, use \code{\link[=from_pretrained]{from_pretrained()}} instead.
 }

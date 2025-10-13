@@ -8,6 +8,77 @@
 # Utility function
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
+# Minimal helpers for creating manifests after training ---------------------
+
+create_training_manifest <- function(model_dir,
+                                     model_id,
+                                     version = NULL,
+                                     metadata = list(),
+                                     include_metrics = TRUE) {
+  model_dir <- fs::path_abs(fs::path_norm(model_dir))
+  if (!fs::dir_exists(model_dir)) {
+    cli::cli_abort("Model directory not found: {.path {model_dir}}")
+  }
+
+  model_final <- fs::path(model_dir, "model_final.pth")
+  config_path <- fs::path(model_dir, "config.yaml")
+  best_path <- fs::path(model_dir, "model_best.pth")
+  metrics_path <- fs::path(model_dir, "metrics.json")
+
+  if (!fs::file_exists(model_final)) {
+    cli::cli_abort("Missing file: {.path {model_final}}")
+  }
+  if (!fs::file_exists(config_path)) {
+    cli::cli_abort("Missing file: {.path {config_path}}")
+  }
+
+  if (is.null(metadata$preview_image)) {
+    preview <- fs::path(model_dir, "preview.png")
+    if (fs::file_exists(preview)) metadata$preview_image <- fs::path_file(preview)
+  } else if (fs::file_exists(metadata$preview_image)) {
+    metadata$preview_image <- fs::path_file(metadata$preview_image)
+  }
+
+  manifest <- list(
+    schema_version = 1L,
+    model_id = model_id,
+    version = pg_coalesce(version, metadata$version, pg_model_auto_version()),
+    created = pg_model_iso_time(),
+    artifacts = list(
+      model_final = fs::path_file(model_final),
+      config = fs::path_file(config_path)
+    ),
+    metadata = metadata,
+    file_size_bytes = as.numeric(sum(fs::file_size(fs::dir_ls(model_dir, recurse = TRUE, type = "file")), na.rm = TRUE))
+  )
+
+  if (fs::file_exists(best_path)) {
+    manifest$artifacts$model_best <- fs::path_file(best_path)
+  }
+
+  if (include_metrics && fs::file_exists(metrics_path)) {
+    manifest$artifacts$metrics <- fs::path_file(metrics_path)
+    manifest$metrics <- collect_training_metrics(metrics_path)
+  }
+
+  manifest
+}
+
+collect_training_metrics <- function(metrics_path) {
+  parsed <- parse_metrics(metrics_path)
+  val <- if (nrow(parsed$validation) > 0) {
+    as.list(parsed$validation[nrow(parsed$validation), , drop = FALSE])
+  } else {
+    NULL
+  }
+  train <- if (nrow(parsed$training) > 0) {
+    as.list(parsed$training[nrow(parsed$training), , drop = FALSE])
+  } else {
+    NULL
+  }
+  list(validation = val, training = train)
+}
+
 #' Suggest learning rate based on batch size and freeze_at
 #'
 #' Returns head LR. Backbone automatically gets LR * 0.1 via BACKBONE_MULTIPLIER.
@@ -150,7 +221,7 @@ resolve_version <- function(base_name, output_dir, remote_base_dir = NULL, ssh_t
 #' @param local_output_dir Local directory to save trained model (default: `Detectron2_Models`).
 #' @param auto_version Auto-increment version suffix if output_name exists (default: TRUE).
 #' @param publish_after_train Whether to publish (pin) the trained model to a board.
-#' @param model_board pins board for model storage (if NULL and `publish_after_train=TRUE`, uses [pg_board_user()]).
+#' @param model_board pins board for model storage (if NULL and `publish_after_train=TRUE`, uses [board_user()]).
 #' @param model_description Optional description to include with the published model.
 #' @return Path to the trained model directory.
 #' @export
@@ -483,15 +554,20 @@ finalize_trained_model <- function(model_dir, config, duration_mins) {
     metadata$description <- config$model_description
   }
 
-  manifest <- pg_model_prepare_manifest(
+  manifest <- create_training_manifest(
     model_dir = model_dir,
     model_id = config$output_name,
     version = config$run_id,
     metadata = metadata,
     include_metrics = TRUE
   )
+  metrics_path <- fs::path(model_dir, "metrics.json")
+  if (fs::file_exists(metrics_path)) {
+    manifest$metrics <- collect_training_metrics(metrics_path)
+  }
+
   manifest_path <- fs::path(model_dir, "manifest.json")
-  pg_model_write_manifest(model_dir, manifest)
+  jsonlite::write_json(manifest, manifest_path, auto_unbox = TRUE, pretty = TRUE)
   cli::cli_alert_success("Manifest written: {.path {manifest_path}}")
 
   if (isTRUE(config$publish_after_train)) {
@@ -502,7 +578,6 @@ finalize_trained_model <- function(model_dir, config, duration_mins) {
         model_dir = model_dir,
         model_id  = config$output_name,
         board     = board_to_use,
-        manifest  = manifest,
         include_metrics = TRUE,
         write_manifest = TRUE
       )

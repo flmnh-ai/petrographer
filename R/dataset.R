@@ -314,39 +314,6 @@ annotation_diagnostics <- function(annotation_json,
 
 
 
-#' Summarize a dataset directory
-#' @param data_dir Directory containing 'train' and 'valid'
-#' @return A tibble with counts for train and val
-#' @export
-summarize_dataset <- function(data_dir) {
-  data_dir <- fs::path_abs(fs::path_norm(data_dir))
-  dirs <- c("train", "valid")
-  out <- tibble::tibble(
-    split = dirs,
-    images = vapply(dirs, function(d) {
-      p <- fs::path(data_dir, d)
-      if (!fs::dir_exists(p)) return(0L)
-      length(fs::dir_ls(p, regexp = "(?i)\\.(jpg|jpeg|png)$"))
-    }, integer(1)),
-    annotations = vapply(dirs, function(d) {
-      fs::file_exists(fs::path(data_dir, d, "_annotations.coco.json"))
-    }, logical(1))
-  )
-
-  # Print summary
-  tot <- sum(out$images, na.rm = TRUE)
-  cli::cli_h2("Dataset Summary")
-  cli::cli_dl(c(
-    "Total images" = tot,
-    "Splits" = paste(out$split, collapse = ", ")
-  ))
-
-  # Show the tibble
-  print(out)
-  invisible(out)
-}
-
-
 #' Slice COCO dataset for varying image sizes
 #'
 #' Uses SAHI to slice images and annotations into tiles. Images smaller than

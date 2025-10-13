@@ -80,7 +80,7 @@ If a number is provided, uses that exact value for the head (backbone still gets
 
 \item{publish_after_train}{Whether to publish (pin) the trained model to a board.}
 
-\item{model_board}{pins board for model storage (if NULL and \code{publish_after_train=TRUE}, uses \code{\link[=pg_board_user]{pg_board_user()}}).}
+\item{model_board}{pins board for model storage (if NULL and \code{publish_after_train=TRUE}, uses \code{\link[=board_user]{board_user()}}).}
 
 \item{model_description}{Optional description to include with the published model.}
 }

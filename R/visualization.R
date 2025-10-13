@@ -148,7 +148,7 @@ pg_plot_annotations <- function(image_path,
 
 #' Plot a sample image from a dataset directory
 #'
-#' @param dataset_dir Directory containing dataset splits (train/valid[/test]).
+#' @param dataset_dir Directory containing dataset splits (train, valid, or optionally test).
 #' @param split Which split to draw from (`"train"`, `"valid"`, or `"test"`).
 #' @param image_name Optional specific image file name; otherwise a random one.
 #' @param annotation_json Optional explicit path to annotation JSON.

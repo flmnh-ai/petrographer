@@ -342,7 +342,7 @@ publish_model(
   include_metrics = TRUE
 )
 
-# 3) Load a model by name (uses PETRO_PINS_URL if set, otherwise the local board)
+# 3) Load a model by name (uses the hosted hub or your local board cache)
 mdl <- load_model(model_name = "shell_detector_v3", device = "cpu")
 
 # 4) Discover pins (optional; uses pins directly)
@@ -364,30 +364,21 @@ train_model(
 )
 ```
 
-Download a hosted pretrained model (read-only hub served from a shared URL):
+Download a hosted pretrained model from the public petrographer hub:
 
 ```r
-Sys.setenv(PETRO_PINS_URL = "https://www.dropbox.com/scl/fo/.../pins?dl=1")
-pg_install_pretrained("petrography/inclusions")
-mdl <- load_model(model_name = "petrography/inclusions", device = "cpu")
+pg_install_pretrained("models--shell_inclusions_v21")
+mdl <- load_model(model_name = "models--shell_inclusions_v21", device = "cpu")
 ```
 
-After updating the board that feeds your pkgdown or Dropbox site, run:
+After publishing new pins to your Dropbox-backed board, refresh the manifest so
+the hub advertises the update:
 
 ```r
 pg_publish_pkgdown_manifest()
-# then rebuild your pkgdown site so the new _pins.yaml is deployed
 ```
 
 Publish a dataset (images + COCO annotations) the same way:
-Before building the pkgdown site, generate the catalog data used on the
-Model Library page:
-
-```r
-pg_pkgdown_refresh()
-```
-
-
 ```r
 pg_dataset_publish(
   dataset_dir = "data/processed/inclusions_shell_sliced",
@@ -395,10 +386,9 @@ pg_dataset_publish(
 )
 ```
 
-Consumers can install the dataset bundle from the hosted hub:
+Consumers can install the dataset pin from the hosted hub:
 
 ```r
-Sys.setenv(PETRO_PINS_URL = "https://www.dropbox.com/scl/fo/.../pins?dl=1")
 pg_install_dataset("datasets/inclusions_shell")
 installed <- pg_dataset_from_pretrained("datasets/inclusions_shell")
 installed$dataset_dir
@@ -410,4 +400,3 @@ pg_save_dataset_preview("data/processed/inclusions_shell_sliced", split = "valid
 ```
 
 Use `pg_plot_dataset_image()` or `pg_plot_annotations()` to inspect samples interactively.
-

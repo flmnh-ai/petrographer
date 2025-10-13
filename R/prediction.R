@@ -2,6 +2,38 @@
 # Core Prediction Functions - Using Direct Reticulate Calls
 # ============================================================================
 
+#' Predict objects in an image
+#'
+#' S3 generic for running predictions with a PetrographyModel.
+#'
+#' @param model A PetrographyModel object
+#' @param image_path Path to image file
+#' @param ... Additional arguments passed to methods
+#' @return Tibble with detection results
+#' @export
+predict <- function(model, image_path, ...) {
+  UseMethod("predict")
+}
+
+#' @export
+predict.PetrographyModel <- function(model, image_path,
+                                      use_slicing = TRUE,
+                                      slice_size = 512,
+                                      overlap = 0.2,
+                                      save_visualizations = FALSE,
+                                      output_dir = NULL,
+                                      ...) {
+  predict_image(
+    image_path = image_path,
+    model = model,
+    use_slicing = use_slicing,
+    slice_size = slice_size,
+    overlap = overlap,
+    save_visualizations = save_visualizations,
+    output_dir = output_dir
+  )
+}
+
 #' Predict objects in a single image
 #' @param image_path Path to image file
 #' @param model PetrographyModel object from load_model()
@@ -425,20 +457,3 @@ evaluate_training <- function(model_dir = "Detectron2_Models",
   return(result)
 }
 
-#' Diagnose annotation dataset for potential issues
-#'
-#' Analyzes a COCO annotation file to identify potential data quality issues
-#' such as incomplete annotations, class imbalance, or unusual object distributions.
-#'
-#' @param annotation_json Path to COCO annotation JSON file
-#' @param image_dir Optional directory containing images (for file checks)
-#' @return List with diagnostic statistics and warnings
-#' @export
-diagnose_annotations <- function(annotation_json, image_dir = NULL) {
-  annotation_diagnostics(
-    annotation_json = annotation_json,
-    image_dir = image_dir,
-    emit_header = TRUE,
-    verbose = TRUE
-  )
-}
