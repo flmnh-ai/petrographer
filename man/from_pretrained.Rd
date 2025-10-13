@@ -19,8 +19,8 @@ from_pretrained(
 
 \item{board}{Board to load from:
 \itemize{
-\item \code{NULL} (default): check local first (.petrographer/), then hub
-\item \code{"local"}: only check locally trained models (.petrographer/)
+\item \code{NULL} (default): check local first (.petrographer/models/), then hub
+\item \code{"local"}: only check locally trained models (.petrographer/models/)
 \item Custom board object
 }}
 

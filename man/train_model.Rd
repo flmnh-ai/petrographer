@@ -7,11 +7,11 @@
 train_model(
   dataset_id = NULL,
   data_dir = NULL,
-  model_id,
+  model_id = NULL,
   num_classes,
   backbone = "resnet50",
   freeze_at = 2,
-  max_iter = 12000,
+  max_iter = 2000,
   learning_rate = NULL,
   device = "cuda",
   eval_period = 1000,
@@ -28,16 +28,16 @@ train_model(
 
 \item{data_dir}{Path to dataset directory (alternative to dataset_id; will be auto-pinned with temp ID).}
 
-\item{model_id}{Name for the trained model (used for pins).}
+\item{model_id}{Name for the trained model (used for pins). Defaults to \code{dataset_id} if not provided.}
 
 \item{num_classes}{Number of object classes in your dataset.}
 
 \item{backbone}{Model backbone: "resnet50" (default), "resnet101", "resnext101", or a full Detectron2 model zoo key.}
 
-\item{freeze_at}{Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem; default), 2 (freeze stem + res2).
+\item{freeze_at}{Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem), 2 (freeze stem + res2; default).
 Lower values train more layers = slower but better domain adaptation.}
 
-\item{max_iter}{Maximum training iterations. Default: 12000.}
+\item{max_iter}{Maximum training iterations. Default: 2000.}
 
 \item{learning_rate}{Learning rate for the detection head. If NULL (default), uses smart
 auto-scaling based on \code{freeze_at} and batch size. Backbone automatically gets 0.1x this rate.

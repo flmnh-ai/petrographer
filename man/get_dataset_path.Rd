@@ -4,12 +4,14 @@
 \alias{get_dataset_path}
 \title{Get path to pinned dataset}
 \usage{
-get_dataset_path(dataset_id, board = "local")
+get_dataset_path(dataset_id, board = "local", version = NULL)
 }
 \arguments{
 \item{dataset_id}{Dataset name}
 
 \item{board}{Pins board (or board object)}
+
+\item{version}{Specific version to retrieve (NULL = latest)}
 }
 \value{
 Path to dataset tar.gz file

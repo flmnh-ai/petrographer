@@ -7,6 +7,7 @@
 prepare_training_config(
   data_dir,
   dataset_id,
+  dataset_version,
   model_id,
   num_classes,
   backbone,
