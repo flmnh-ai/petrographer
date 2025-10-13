@@ -23,26 +23,39 @@ hpg_configure(
 )
 
 data_dir <- here("data/processed/inclusions_sliced")
+```
 
+```{r}
 # Validate dataset
 validate_dataset(data_dir)
+
+ pin_dataset(
+    data_dir = data_dir,
+    dataset_id = "inclusions",
+    metadata = list(
+      description = "Sliced inclusions only",
+      created_by = "nick-gauthier",
+      num_images = 544
+    )
+  )
 ```
+
 
 ## Training
 
 ```{r training}
 # Train model - HPC settings configured above
-model_path <- train_model(
-  data_dir = data_dir,
-  output_name = "inclusions",
+model_id <- train_model(
+  dataset_id = 'inclusions',
   ims_per_batch = 16,
-  num_workers = 16,
-  hpc_cpus_per_task = 18,
+  num_workers = 32,
+  hpc_cpus_per_task = 32,
   hpc_mem = "96gb",
-  eval_period = 150,
-  max_iter = 1500,
+  eval_period = 200,
+  max_iter = 2000,
   num_classes = 1,
-  learning_rate = 1e-4
+  learning_rate = 1e-4,
+  freeze_at = 1
 )
 ```
 
@@ -153,7 +166,7 @@ Evaluate the model on the validation set using SAHI inference and compute COCO m
 
 ```{r sahi-eval}
 # Load trained model
-model <- load_model(
+model <- from_pretrained(
   model_path = path(model_path, "model_final.pth"),
   config_path = path(model_path, "config.yaml")
 )
