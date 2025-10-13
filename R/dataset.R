@@ -466,7 +466,7 @@ pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
   validate_dataset(data_dir, quiet = TRUE)
 
   if (is.null(board)) {
-    board <- .get_local_board()
+    board <- .get_dataset_board()
   }
 
   # Create tar.gz in temp directory
@@ -510,7 +510,7 @@ pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
 #' @export
 list_datasets <- function(board = "local") {
   if (identical(board, "local") || is.null(board)) {
-    board <- .get_local_board()
+    board <- .get_dataset_board()
   }
 
   # Get all pins
@@ -528,15 +528,16 @@ list_datasets <- function(board = "local") {
 #'
 #' @param dataset_id Dataset name
 #' @param board Pins board (or board object)
+#' @param version Specific version to retrieve (NULL = latest)
 #' @return Path to dataset tar.gz file
 #' @export
-get_dataset_path <- function(dataset_id, board = "local") {
+get_dataset_path <- function(dataset_id, board = "local", version = NULL) {
   if (identical(board, "local") || is.null(board)) {
-    board <- .get_local_board()
+    board <- .get_dataset_board()
   }
 
   # Get pin paths (returns vector of file paths)
-  paths <- pins::pin_download(board, dataset_id)
+  paths <- pins::pin_download(board, dataset_id, version = version)
 
   # Find the tar.gz file
   tar_files <- paths[grepl("\\.tar\\.gz$", paths)]

@@ -399,7 +399,7 @@ evaluate_training <- function(model_id = NULL,
   # Resolve model directory from model_id or use provided path
   if (!is.null(model_id)) {
     if (is.null(board)) {
-      board <- .get_local_board()
+      board <- .get_model_board()
     }
     files <- pins::pin_download(board, model_id)
     model_dir <- fs::path_dir(files[1])

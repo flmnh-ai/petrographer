@@ -5,9 +5,16 @@
 # The public model hub URL (served via pkgdown)
 .hub_url <- "https://flmnh-ai.github.io/petrographer/pins/"
 
-# Internal: Get default local board
-.get_local_board <- function() {
-  path <- here::here(".petrographer")
+# Internal: Get dataset board
+.get_dataset_board <- function() {
+  path <- here::here(".petrographer/datasets")
+  fs::dir_create(path, recurse = TRUE)
+  pins::board_folder(path, versioned = TRUE)
+}
+
+# Internal: Get model board
+.get_model_board <- function() {
+  path <- here::here(".petrographer/models")
   fs::dir_create(path, recurse = TRUE)
   pins::board_folder(path, versioned = TRUE)
 }
@@ -20,8 +27,8 @@
 #' @param model_id Model name (e.g., "shell_v3")
 #' @param version Specific version (NULL for latest)
 #' @param board Board to load from:
-#'   - `NULL` (default): check local first (.petrographer/), then hub
-#'   - `"local"`: only check locally trained models (.petrographer/)
+#'   - `NULL` (default): check local first (.petrographer/models/), then hub
+#'   - `"local"`: only check locally trained models (.petrographer/models/)
 #'   - Custom board object
 #' @param device Device: "cpu", "cuda", or "mps"
 #' @param confidence Detection threshold
@@ -48,7 +55,7 @@ from_pretrained <- function(model_id,
   # Resolve board
   if (is.null(board)) {
     # Smart default: check local first, then hub
-    local_board <- .get_local_board()
+    local_board <- .get_model_board()
 
     # Check if model exists locally
     local_pins <- tryCatch(
@@ -64,7 +71,7 @@ from_pretrained <- function(model_id,
       cli::cli_alert_info("Loading from hub")
     }
   } else if (identical(board, "local")) {
-    board <- .get_local_board()
+    board <- .get_model_board()
   }
   # else: use provided board object
 
@@ -153,7 +160,7 @@ pin_model <- function(model_dir,
   # Upload
   pins::pin_upload(board, files, name = model_id, metadata = metadata)
 
-  cli::cli_alert_success("Pinned {.strong {model_id}}")
+  invisible(model_id)
 }
 
 #' List available models
@@ -164,7 +171,7 @@ list_models <- function(board = NULL) {
   if (is.null(board)) {
     board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
   } else if (identical(board, "local")) {
-    board <- .get_local_board()
+    board <- .get_model_board()
   }
   pins::pin_list(board)
 }
@@ -178,7 +185,7 @@ model_info <- function(model_id, board = NULL) {
   if (is.null(board)) {
     board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
   } else if (identical(board, "local")) {
-    board <- .get_local_board()
+    board <- .get_model_board()
   }
 
   meta <- pins::pin_meta(board, model_id)
