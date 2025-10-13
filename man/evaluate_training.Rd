@@ -11,12 +11,18 @@ Reads Detectron2 metrics.json and exports:
 }}
 \usage{
 evaluate_training(
-  model_dir = "Detectron2_Models",
+  model_id = NULL,
+  model_dir = NULL,
+  board = NULL,
   output_dir = "results/evaluation"
 )
 }
 \arguments{
-\item{model_dir}{Directory containing trained model (default: 'Detectron2_Models')}
+\item{model_id}{Model ID (will be resolved from local board)}
+
+\item{model_dir}{Directory containing trained model (alternative to model_id)}
+
+\item{board}{Pins board (NULL = local board, only used if model_id provided)}
 
 \item{output_dir}{Output directory for results (default: 'results/evaluation')}
 }

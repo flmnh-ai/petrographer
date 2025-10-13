@@ -17,7 +17,7 @@ predict_images(
 \arguments{
 \item{input_dir}{Directory containing images}
 
-\item{model}{PetrographyModel object from load_model()}
+\item{model}{PetrographyModel object from from_pretrained()}
 
 \item{use_slicing}{Whether to use SAHI sliced inference (default: TRUE)}
 

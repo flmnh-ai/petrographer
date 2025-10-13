@@ -17,7 +17,12 @@ from_pretrained(
 
 \item{version}{Specific version (NULL for latest)}
 
-\item{board}{Pins board (NULL = public hub)}
+\item{board}{Board to load from:
+\itemize{
+\item \code{NULL} (default): check local first (.petrographer/), then hub
+\item \code{"local"}: only check locally trained models (.petrographer/)
+\item Custom board object
+}}
 
 \item{device}{Device: "cpu", "cuda", or "mps"}
 
@@ -27,5 +32,19 @@ from_pretrained(
 PetrographyModel object
 }
 \description{
-Load a pretrained model
+Loads models from local training board, hub, or custom board.
+By default, checks local models first, then falls back to the public hub.
+}
+\examples{
+\dontrun{
+# Smart loading (checks local first, then hub)
+model <- from_pretrained("my_model")
+
+# Force local only
+model <- from_pretrained("my_model", board = "local")
+
+# Force hub only
+hub_board <- pins::board_url("https://flmnh-ai.github.io/petrographer/pins/")
+model <- from_pretrained("public_model", board = hub_board)
+}
 }

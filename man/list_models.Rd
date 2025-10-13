@@ -7,7 +7,7 @@
 list_models(board = NULL)
 }
 \arguments{
-\item{board}{Pins board (NULL = public hub)}
+\item{board}{Pins board (NULL = public hub, "local" = local training board)}
 }
 \description{
 List available models

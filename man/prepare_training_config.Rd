@@ -6,7 +6,8 @@
 \usage{
 prepare_training_config(
   data_dir,
-  output_name,
+  dataset_id,
+  model_id,
   num_classes,
   backbone,
   freeze_at,
@@ -17,18 +18,9 @@ prepare_training_config(
   checkpoint_period,
   ims_per_batch,
   num_workers,
-  hpc_env,
   hpc_cpus_per_task,
   hpc_mem,
-  gpus,
-  hpc_host,
-  hpc_user,
-  hpc_base_dir,
-  local_output_dir,
-  auto_version,
-  publish_after_train,
-  model_board,
-  model_description
+  gpus
 )
 }
 \description{

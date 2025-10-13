@@ -5,8 +5,9 @@
 \title{Train a new petrography detection model}
 \usage{
 train_model(
-  data_dir,
-  output_name,
+  dataset_id = NULL,
+  data_dir = NULL,
+  model_id,
   num_classes,
   backbone = "resnet50",
   freeze_at = 2,
@@ -17,25 +18,17 @@ train_model(
   checkpoint_period = 0,
   ims_per_batch = NA,
   num_workers = NULL,
-  hpc_env = NULL,
   hpc_cpus_per_task = NULL,
   hpc_mem = NULL,
-  gpus = 1,
-  hpc_host = Sys.getenv("PETROGRAPHER_HPC_HOST", ""),
-  hpc_user = NULL,
-  hpc_base_dir = Sys.getenv("PETROGRAPHER_HPC_BASE_DIR", ""),
-  local_output_dir = here::here("Detectron2_Models"),
-  auto_version = TRUE,
-  publish_after_train = FALSE,
-  model_board = NULL,
-  model_description = NULL
+  gpus = 1
 )
 }
 \arguments{
-\item{data_dir}{Directory containing \verb{train/} and \verb{valid/} subdirectories with COCO annotations.}
+\item{dataset_id}{Name of pinned dataset to use for training (preferred).}
 
-\item{output_name}{Name for the trained model (used for artifact directories and pin names).
-If \code{auto_version=TRUE} (default) and this name already exists, automatically appends \verb{_v2}, \verb{_v3}, etc.}
+\item{data_dir}{Path to dataset directory (alternative to dataset_id; will be auto-pinned with temp ID).}
+
+\item{model_id}{Name for the trained model (used for pins).}
 
 \item{num_classes}{Number of object classes in your dataset.}
 
@@ -60,35 +53,22 @@ If a number is provided, uses that exact value for the head (backbone still gets
 
 \item{num_workers}{DataLoader workers per process (Detectron2). If NULL (default), set to images per GPU.}
 
-\item{hpc_env}{Character vector of SLURM script preamble lines (e.g., module loads). If NULL, none added.}
+\item{hpc_cpus_per_task}{Optional SLURM cpus-per-task hint for HPC training.}
 
-\item{hpc_cpus_per_task}{Optional SLURM cpus-per-task hint.}
-
-\item{hpc_mem}{Optional SLURM memory hint.}
+\item{hpc_mem}{Optional SLURM memory hint for HPC training (e.g., "24gb", "96gb").}
 
 \item{gpus}{Number of GPUs for HPC training (default: 1; ignored for local).}
-
-\item{hpc_host}{SSH hostname for HPC training (default: \code{PETROGRAPHER_HPC_HOST}; empty for local).}
-
-\item{hpc_user}{Username for HPC (default: NULL).}
-
-\item{hpc_base_dir}{Remote base directory on HPC (default: \code{PETROGRAPHER_HPC_BASE_DIR}).}
-
-\item{local_output_dir}{Local directory to save trained model (default: \code{Detectron2_Models}).}
-
-\item{auto_version}{Auto-increment version suffix if output_name exists (default: TRUE).}
-
-\item{publish_after_train}{Whether to publish (pin) the trained model to a board.}
-
-\item{model_board}{pins board for model storage (if NULL and \code{publish_after_train=TRUE}, uses \code{\link[=board_user]{board_user()}}).}
-
-\item{model_description}{Optional description to include with the published model.}
 }
 \value{
-Path to the trained model directory.
+Model ID (can be loaded with \code{from_pretrained(model_id)}).
 }
 \description{
 Orchestrates local or HPC training using Detectron2. R computes batch size,
 workers, and a batch-scaled learning rate, then calls the Python trainer.
-Optionally publishes the resulting model to a pins board.
+Models are automatically pinned to the local board (.petrographer/) for versioning.
+}
+\details{
+Training mode (local vs HPC) is auto-detected based on \code{hipergator} configuration.
+For HPC training, call \code{hipergator::hpg_configure()} before \code{train_model()} to set
+connection details (host, user, base_dir).
 }

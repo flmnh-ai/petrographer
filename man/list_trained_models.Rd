@@ -2,18 +2,13 @@
 % Please edit documentation in R/model.R
 \name{list_trained_models}
 \alias{list_trained_models}
-\title{List all trained models with metadata}
+\title{List all locally trained models}
 \usage{
-list_trained_models(output_dir = "Detectron2_Models")
-}
-\arguments{
-\item{output_dir}{Directory containing trained models (default: 'Detectron2_Models')}
+list_trained_models()
 }
 \value{
-A tibble with model metadata
+Character vector of pinned model names
 }
 \description{
-Scans the model output directory and returns a tibble with information
-about each trained model, including creation time, size, and final metrics
-if available.
+List all locally trained models
 }

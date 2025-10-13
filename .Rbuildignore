@@ -1,4 +1,4 @@
-^petrographer\.Rproj$ 
+^petrographer\.Rproj$
 ^\.Rproj\.user$
 ^\.DS_Store$
 ^\.Rhistory$
@@ -14,8 +14,12 @@
 
 ^archived(/|$)
 ^data(/|$)
+^data-raw(/|$)
 ^results(/|$)
 ^Detectron2_Models(/|$)
 ^\.claude(/|$)
 
 ^\\.Renviron$
+^CLAUDE\.md$
+^\.petrographer(/|$)
+^petrographer-pins(/|$)

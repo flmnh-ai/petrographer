@@ -9,7 +9,7 @@ model_info(model_id, board = NULL)
 \arguments{
 \item{model_id}{Model name}
 
-\item{board}{Pins board (NULL = public hub)}
+\item{board}{Pins board (NULL = public hub, "local" = local training board)}
 }
 \description{
 Get model info
