@@ -438,3 +438,116 @@ slice_dataset <- function(input_dir,
 
   invisible(output_dir)
 }
+
+
+# ============================================================================
+# Dataset Pinning Functions
+# ============================================================================
+
+#' Pin a dataset to a board
+#'
+#' Pins a COCO-format dataset directory to a pins board for versioning and reuse.
+#' The dataset is compressed as tar.gz before pinning.
+#'
+#' @param data_dir Path to dataset directory
+#' @param dataset_id Name for the pinned dataset
+#' @param board Pins board (NULL = local board at .petrographer/)
+#' @param metadata Optional metadata list
+#' @export
+pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
+  if (!fs::dir_exists(data_dir)) {
+    cli::cli_abort("Dataset directory not found: {.path {data_dir}}")
+  }
+
+  data_dir <- fs::path_abs(fs::path_norm(data_dir))
+
+  # Validate dataset structure FIRST
+  cli::cli_alert_info("Validating dataset structure...")
+  validate_dataset(data_dir, quiet = TRUE)
+
+  if (is.null(board)) {
+    board <- .get_local_board()
+  }
+
+  # Create tar.gz in temp directory
+  cli::cli_alert_info("Compressing dataset...")
+  temp_dir <- fs::path_temp(paste0("pin_dataset_", dataset_id))
+  fs::dir_create(temp_dir)
+  on.exit(fs::dir_delete(temp_dir), add = TRUE)
+
+  tar_file <- fs::path(temp_dir, paste0(dataset_id, ".tar.gz"))
+
+  # Use R's tar() with -C flag to tar only train/ and valid/ subdirectories
+  # Result: tar contains train/, valid/ at root (no parent directory)
+  tar_result <- tar(
+    tarfile = tar_file,
+    files = c("train", "valid"),
+    compression = "gzip",
+    tar = sprintf("tar -C %s", shQuote(data_dir))
+  )
+
+  if (tar_result != 0) {
+    cli::cli_abort("Failed to create tar.gz archive")
+  }
+
+  metadata$pinned <- Sys.time()
+  metadata$compressed <- TRUE
+  metadata$original_path <- as.character(data_dir)
+
+  # Pin the tar.gz file
+  cli::cli_alert_info("Pinning to board...")
+  pins::pin_upload(board, tar_file, name = dataset_id, metadata = metadata)
+
+  cli::cli_alert_success("Pinned dataset {.strong {dataset_id}} ({fs::file_size(tar_file) |> fs_bytes() |> format()})")
+  invisible(dataset_id)
+}
+
+#' List pinned datasets
+#'
+#' Lists all pinned datasets on a board.
+#'
+#' @param board Pins board (NULL = local board, "local" = local board)
+#' @export
+list_datasets <- function(board = "local") {
+  if (identical(board, "local") || is.null(board)) {
+    board <- .get_local_board()
+  }
+
+  # Get all pins
+  all_pins <- pins::pin_list(board)
+
+  # Filter for dataset pins (could use naming convention if needed)
+  # For now, return all pins - user can inspect with pin_meta()
+  all_pins
+}
+
+#' Get path to pinned dataset
+#'
+#' Returns filesystem path to a pinned dataset tar.gz file.
+#' The tar.gz should be extracted at training time.
+#'
+#' @param dataset_id Dataset name
+#' @param board Pins board (or board object)
+#' @return Path to dataset tar.gz file
+#' @export
+get_dataset_path <- function(dataset_id, board = "local") {
+  if (identical(board, "local") || is.null(board)) {
+    board <- .get_local_board()
+  }
+
+  # Get pin paths (returns vector of file paths)
+  paths <- pins::pin_download(board, dataset_id)
+
+  # Find the tar.gz file
+  tar_files <- paths[grepl("\\.tar\\.gz$", paths)]
+
+  if (length(tar_files) == 0) {
+    cli::cli_abort("No tar.gz file found in pinned dataset {.val {dataset_id}}")
+  }
+
+  if (length(tar_files) > 1) {
+    cli::cli_warn("Multiple tar.gz files found, using first: {.path {tar_files[1]}}")
+  }
+
+  as.character(tar_files[1])
+}

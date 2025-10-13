@@ -36,7 +36,7 @@ predict.PetrographyModel <- function(model, image_path,
 
 #' Predict objects in a single image
 #' @param image_path Path to image file
-#' @param model PetrographyModel object from load_model()
+#' @param model PetrographyModel object from from_pretrained()
 #' @param use_slicing Whether to use SAHI sliced inference (default: TRUE)
 #' @param slice_size Size of slices for SAHI in pixels (default: 512)
 #' @param overlap Overlap ratio between slices (default: 0.2)
@@ -54,7 +54,7 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
   }
 
   if (!inherits(model, "PetrographyModel")) {
-    cli::cli_abort("model must be a PetrographyModel object from load_model()")
+    cli::cli_abort("model must be a PetrographyModel object from from_pretrained()")
   }
 
   # Set up output directory
@@ -106,7 +106,7 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
 
 #' Predict objects in multiple images (directory)
 #' @param input_dir Directory containing images
-#' @param model PetrographyModel object from load_model()
+#' @param model PetrographyModel object from from_pretrained()
 #' @param use_slicing Whether to use SAHI sliced inference (default: TRUE)
 #' @param slice_size Size of slices for SAHI in pixels (default: 512)
 #' @param overlap Overlap ratio between slices (default: 0.2)
@@ -125,7 +125,7 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
   }
 
   if (!inherits(model, "PetrographyModel")) {
-    cli::cli_abort("model must be a PetrographyModel object from load_model()")
+    cli::cli_abort("model must be a PetrographyModel object from from_pretrained()")
   }
 
   # Create output directory
@@ -191,7 +191,7 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
 #' returns a tidy summary of the standard 12 bbox metrics alongside the raw
 #' prediction table for further analysis.
 #'
-#' @param model A `PetrographyModel` from [load_model()].
+#' @param model A `PetrographyModel` from [from_pretrained()].
 #' @param annotation_json Path to COCO annotation JSON (e.g. `valid/_annotations.coco.json`).
 #' @param image_dir Directory containing the images referenced in the
 #'   annotation file. If `NULL`, image paths are resolved relative to the
@@ -220,7 +220,7 @@ evaluate_model_sahi <- function(model,
                                 max_dets = 100) {
 
   if (!inherits(model, "PetrographyModel")) {
-    cli::cli_abort("model must be a PetrographyModel object from load_model().")
+    cli::cli_abort("model must be a PetrographyModel object from from_pretrained().")
   }
   if (!fs::file_exists(annotation_json)) {
     cli::cli_abort("Annotation file not found: {.path {annotation_json}}")
@@ -385,15 +385,33 @@ evaluate_model_sahi <- function(model,
 #' - training_metrics.csv: losses, lr, etc.
 #' - validation_metrics.csv: aggregate COCO bbox and segm AP metrics
 #' - validation_classwise.csv: per-class AP metrics (when logged by evaluator)
-#' @param model_dir Directory containing trained model (default: 'Detectron2_Models')
+#' @param model_id Model ID (will be resolved from local board)
+#' @param model_dir Directory containing trained model (alternative to model_id)
+#' @param board Pins board (NULL = local board, only used if model_id provided)
 #' @param output_dir Output directory for results (default: 'results/evaluation')
 #' @return List with parsed tibbles and summary statistics
 #' @export
-evaluate_training <- function(model_dir = "Detectron2_Models",
+evaluate_training <- function(model_id = NULL,
+                             model_dir = NULL,
+                             board = NULL,
                              output_dir = "results/evaluation") {
-  
-  cli::cli_h2("Training Evaluation")
-  cli::cli_alert_info("Loading training metrics from: {.path {model_dir}}")
+
+  # Resolve model directory from model_id or use provided path
+  if (!is.null(model_id)) {
+    if (is.null(board)) {
+      board <- .get_local_board()
+    }
+    files <- pins::pin_download(board, model_id)
+    model_dir <- fs::path_dir(files[1])
+    cli::cli_h2("Training Evaluation")
+    cli::cli_alert_info("Model: {.val {model_id}}")
+    cli::cli_alert_info("Loading metrics from: {.path {model_dir}}")
+  } else if (!is.null(model_dir)) {
+    cli::cli_h2("Training Evaluation")
+    cli::cli_alert_info("Loading training metrics from: {.path {model_dir}}")
+  } else {
+    cli::cli_abort("Must provide either {.arg model_id} or {.arg model_dir}")
+  }
 
   # Create output directory
   fs::dir_create(output_dir)

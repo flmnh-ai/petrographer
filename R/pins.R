@@ -1,46 +1,72 @@
 # ============================================================================
-# Minimal Pins Integration for Model Hub
+# Pins Integration for Model Hub
 # ============================================================================
 
-# The public model hub URL
-.hub_url <- "https://dl.dropboxusercontent.com/scl/fi/egsznhlwhzrjvf7ucazmr/_pins.yaml?rlkey=347x9dwz9h2rkhodeun7aoaom&dl=1"
+# The public model hub URL (served via pkgdown)
+.hub_url <- "https://flmnh-ai.github.io/petrographer/pins/"
 
-#' Create a user board for publishing models
-#'
-#' @param path Optional path override (uses PETROGRAPHER_BOARD_PATH env var or default)
-#' @return pins board object
-#' @export
-board_user <- function(path = Sys.getenv("PETROGRAPHER_BOARD_PATH", "")) {
-  if (!nzchar(path)) {
-    if (requireNamespace("here", quietly = TRUE)) {
-      path <- here::here("petrographer-pins")
-    } else {
-      cli::cli_abort("Please install {.pkg here} or specify {.arg path}")
-    }
-  }
+# Internal: Get default local board
+.get_local_board <- function() {
+  path <- here::here(".petrographer")
   fs::dir_create(path, recurse = TRUE)
   pins::board_folder(path, versioned = TRUE)
 }
 
 #' Load a pretrained model
 #'
+#' Loads models from local training board, hub, or custom board.
+#' By default, checks local models first, then falls back to the public hub.
+#'
 #' @param model_id Model name (e.g., "shell_v3")
 #' @param version Specific version (NULL for latest)
-#' @param board Pins board (NULL = public hub)
+#' @param board Board to load from:
+#'   - `NULL` (default): check local first (.petrographer/), then hub
+#'   - `"local"`: only check locally trained models (.petrographer/)
+#'   - Custom board object
 #' @param device Device: "cpu", "cuda", or "mps"
 #' @param confidence Detection threshold
 #' @return PetrographyModel object
 #' @export
+#' @examples
+#' \dontrun{
+#' # Smart loading (checks local first, then hub)
+#' model <- from_pretrained("my_model")
+#'
+#' # Force local only
+#' model <- from_pretrained("my_model", board = "local")
+#'
+#' # Force hub only
+#' hub_board <- pins::board_url("https://flmnh-ai.github.io/petrographer/pins/")
+#' model <- from_pretrained("public_model", board = hub_board)
+#' }
 from_pretrained <- function(model_id,
                             version = NULL,
                             board = NULL,
                             device = "cpu",
                             confidence = 0.5) {
 
-  # Default to public hub
+  # Resolve board
   if (is.null(board)) {
-    board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
+    # Smart default: check local first, then hub
+    local_board <- .get_local_board()
+
+    # Check if model exists locally
+    local_pins <- tryCatch(
+      pins::pin_list(local_board),
+      error = function(e) character(0)
+    )
+
+    if (model_id %in% local_pins) {
+      board <- local_board
+      cli::cli_alert_info("Loading from local board")
+    } else {
+      board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
+      cli::cli_alert_info("Loading from hub")
+    }
+  } else if (identical(board, "local")) {
+    board <- .get_local_board()
   }
+  # else: use provided board object
 
   # Download model files
   files <- pins::pin_download(board, model_id, version = version)
@@ -48,9 +74,22 @@ from_pretrained <- function(model_id,
   # Find model weights
   model_path <- files[grepl("model_best\\.pth$", files)][1]
   config_path <- files[grepl("config\\.yaml$", files)][1]
+  metadata_path <- files[grepl("metadata\\.json$", files)][1]
 
   if (is.na(model_path)) cli::cli_abort("No model weights found for {.val {model_id}}")
   if (is.na(config_path)) cli::cli_abort("No config found for {.val {model_id}}")
+
+  # Load category mapping from metadata.json if available
+  category_mapping <- NULL
+  if (!is.na(metadata_path) && fs::file_exists(metadata_path)) {
+    metadata_json <- jsonlite::read_json(metadata_path)
+    if (!is.null(metadata_json$thing_classes)) {
+      # Convert R list to Python dict: {0: "class1", 1: "class2", ...}
+      class_names <- unlist(metadata_json$thing_classes)
+      category_mapping <- as.list(setNames(class_names, seq_along(class_names) - 1))
+      cli::cli_alert_info("Loaded {length(category_mapping)} class names from metadata")
+    }
+  }
 
   cli::cli_alert_success("Loading {.strong {model_id}}")
 
@@ -61,7 +100,8 @@ from_pretrained <- function(model_id,
     model_path = as.character(model_path),
     config_path = as.character(config_path),
     confidence_threshold = confidence,
-    device = device
+    device = device,
+    category_mapping = if (!is.null(category_mapping)) category_mapping else NULL
   )
 
   # Wrap in PetrographyModel
@@ -77,19 +117,21 @@ from_pretrained <- function(model_id,
   return(model)
 }
 
-#' Publish model to board
+#' Pin a trained model to a board
+#'
+#' Uploads model files to a pins board for versioning and sharing.
+#' Maintainers should call [pins::write_board_manifest()] after pinning
+#' to update the board manifest for board_url() consumers.
 #'
 #' @param model_dir Directory with model files
 #' @param model_id Name for the model
-#' @param board Pins board to publish to
+#' @param board Pins board to pin to
 #' @param metadata Optional metadata list
-#' @param update_manifest Update _pins.yaml for board_url access
 #' @export
-publish_model <- function(model_dir,
-                          model_id,
-                          board,
-                          metadata = list(),
-                          update_manifest = TRUE) {
+pin_model <- function(model_dir,
+                      model_id,
+                      board,
+                      metadata = list()) {
 
   # Required files
   required <- c("model_best.pth", "config.yaml")
@@ -101,40 +143,42 @@ publish_model <- function(model_dir,
   }
 
   # Add optional files if present
-  optional <- c("metrics.json", "log.txt")
+  optional <- c("metadata.json", "metrics.json", "log.txt")
   opt_files <- fs::path(model_dir, optional)
   files <- c(files, opt_files[fs::file_exists(opt_files)])
 
   # Add timestamp
-  metadata$published <- Sys.time()
+  metadata$pinned <- Sys.time()
 
   # Upload
   pins::pin_upload(board, files, name = model_id, metadata = metadata)
 
-  if (update_manifest) {
-    pins::write_board_manifest(board)
-  }
-
-  cli::cli_alert_success("Published {.strong {model_id}}")
+  cli::cli_alert_success("Pinned {.strong {model_id}}")
 }
 
 #' List available models
-#' @param board Pins board (NULL = public hub)
+#'
+#' @param board Pins board (NULL = public hub, "local" = local training board)
 #' @export
 list_models <- function(board = NULL) {
   if (is.null(board)) {
     board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
+  } else if (identical(board, "local")) {
+    board <- .get_local_board()
   }
   pins::pin_list(board)
 }
 
 #' Get model info
+#'
 #' @param model_id Model name
-#' @param board Pins board (NULL = public hub)
+#' @param board Pins board (NULL = public hub, "local" = local training board)
 #' @export
 model_info <- function(model_id, board = NULL) {
   if (is.null(board)) {
     board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
+  } else if (identical(board, "local")) {
+    board <- .get_local_board()
   }
 
   meta <- pins::pin_meta(board, model_id)
@@ -148,8 +192,8 @@ model_info <- function(model_id, board = NULL) {
   ))
 
   if (!is.null(meta$user)) {
-    if (!is.null(meta$user$published)) {
-      cli::cli_text("Published: {meta$user$published}")
+    if (!is.null(meta$user$pinned)) {
+      cli::cli_text("Pinned: {meta$user$pinned}")
     }
     if (!is.null(meta$user$notes)) {
       cli::cli_text("{meta$user$notes}")
@@ -157,41 +201,4 @@ model_info <- function(model_id, board = NULL) {
   }
 
   invisible(meta)
-}
-
-# ============================================================================
-# Internal helpers (for training.R compatibility)
-# ============================================================================
-
-# Null coalescing
-pg_coalesce <- function(...) {
-  for (val in list(...)) {
-    if (!is.null(val)) return(val)
-  }
-  NULL
-}
-
-# ISO timestamp
-pg_model_iso_time <- function(x = Sys.time()) {
-  format(as.POSIXct(x, tz = "UTC"), "%Y-%m-%dT%H:%M:%SZ")
-}
-
-# Auto version string
-pg_model_auto_version <- function(prefix = "v") {
-  paste0(prefix, format(Sys.time(), "%Y%m%d%H%M%S"))
-}
-
-# For training.R compatibility
-pg_board_user <- function(path = Sys.getenv("PETROGRAPHER_BOARD_PATH", "")) {
-  board_user(path)
-}
-
-# For training.R compatibility
-pg_model_publish <- function(model_dir,
-                              model_id,
-                              board,
-                              metadata = list(),
-                              include_metrics = TRUE,
-                              write_manifest = TRUE) {
-  publish_model(model_dir, model_id, board, metadata, write_manifest)
 }
