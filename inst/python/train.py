@@ -239,6 +239,17 @@ def main(args):
     with open(os.path.join(cfg.OUTPUT_DIR, "config.yaml"), "w") as f:
         f.write(cfg.dump())
 
+    # Save metadata with class names for inference
+    import json
+    metadata_dict = {
+        "thing_classes": tnames,
+        "num_classes": args.num_classes,
+        "dataset_name": args.dataset_name,
+        "val_dataset_name": args.val_dataset_name
+    }
+    with open(os.path.join(cfg.OUTPUT_DIR, "metadata.json"), "w") as f:
+        json.dump(metadata_dict, f, indent=2)
+
     trainer = CocoTrainer(cfg)
 
     # Resume & keep best checkpoint by segm/AP (switch to "bbox/AP" if you prefer)
