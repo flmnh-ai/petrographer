@@ -13,12 +13,13 @@
 <script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Petrographic Thin Section Analysis with Deep Learning">
 <meta name="description" content="Automated petrographic analysis of thin section images using deep learning models. Provides tools for training Detectron2 models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.">
 <meta property="og:description" content="Automated petrographic analysis of thin section images using deep learning models. Provides tools for training Detectron2 models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.">
+<meta property="og:image" content="https://flmnh-ai.github.io/petrographer/logo.png">
 </head>
 <body>
     <a href="#main" class="visually-hidden-focusable">Skip to contents</a>
 
 
-    <nav class="navbar navbar-expand-lg fixed-top bg-light" data-bs-theme="light" aria-label="Site navigation"><div class="container">
+    <nav class="navbar navbar-expand-lg fixed-top bg-primary" data-bs-theme="dark" aria-label="Site navigation"><div class="container">
 
     <a class="navbar-brand me-2" href="index.html">petrographer</a>
 
@@ -32,6 +33,14 @@
     <div id="navbar" class="collapse navbar-collapse ms-3">
       <ul class="navbar-nav me-auto">
 <li class="nav-item"><a class="nav-link" href="reference/index.html">Reference</a></li>
+<li class="nav-item dropdown">
+  <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
+  <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
+<li><a class="dropdown-item" href="articles/model-library.html">Model &amp; Dataset Library</a></li>
+    <li><a class="dropdown-item" href="articles/training-models.html">Training Custom Detection Models</a></li>
+    <li><a class="dropdown-item" href="articles/whole-slide-basics.html">Whole-Slide Prediction Basics</a></li>
+  </ul>
+</li>
 <li class="nav-item"><a class="nav-link" href="news/index.html">Changelog</a></li>
       </ul>
 <ul class="navbar-nav">
@@ -47,197 +56,251 @@
 </nav><div class="container template-home">
 <div class="row">
   <main id="main" class="col-md-9"><div class="section level1">
-<div class="page-header"><h1 id="petrographer-petrographic-image-analysis-with-detectron2-and-sahi">petrographer: Petrographic Image Analysis with Detectron2 and SAHI<a class="anchor" aria-label="anchor" href="#petrographer-petrographic-image-analysis-with-detectron2-and-sahi"></a>
-</h1></div>
-<p>Automated instance segmentation and morphological analysis of petrographic thin sections using state-of-the-art computer vision models.</p>
+<div class="page-header">
+<img src="logo.png" class="logo" alt=""><h1 id="petrographer-">petrographer <a class="anchor" aria-label="anchor" href="#petrographer-"></a>
+</h1>
+</div>
+<!-- badges: start -->
+
+<blockquote>
+<p>HuggingFace-like interface for petrographic thin section analysis with Detectron2 and SAHI</p>
+</blockquote>
+<p>Automated instance segmentation and morphological analysis of petrographic thin sections using state-of-the-art computer vision models. Provides a clean, modern workflow for both researchers running inference with pretrained models and developers training custom models.</p>
 <div class="section level2">
-<h2 id="overview">Overview<a class="anchor" aria-label="anchor" href="#overview"></a>
+<h2 id="quick-start-users">Quick Start (Users)<a class="anchor" aria-label="anchor" href="#quick-start-users"></a>
 </h2>
-<p>This R package provides a complete workflow for training, evaluating, and analyzing petrographic thin section images using Detectron2 with SAHI (Slicing Aided Hyper Inference) for improved detection of small objects. The workflow combines Python-based machine learning with R-based analysis and visualization through a clean, modern interface.</p>
-<p>Quick start (local)</p>
-<pre><code><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://flmnh-ai.github.io/petrographer/">petrographer</a></span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Validate dataset</span></span>
-<span><span class="fu"><a href="reference/validate_dataset.html">validate_dataset</a></span><span class="op">(</span><span class="st">"data/processed/shell_mixed"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Train locally</span></span>
-<span><span class="va">model_dir</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/shell_mixed"</span>,</span>
-<span>  output_name <span class="op">=</span> <span class="st">"shell_detector_v3"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  device <span class="op">=</span> <span class="st">"cpu"</span> <span class="co"># or "cuda"/"mps"</span></span>
-<span><span class="op">)</span></span>
-<span></span>
-<span><span class="fu"><a href="reference/evaluate_training.html">evaluate_training</a></span><span class="op">(</span><span class="va">model_dir</span><span class="op">)</span></span></code></pre>
-<p>Quick start (HPC)</p>
-<p><strong>Setup</strong>: First configure your HPC defaults in <code>.Renviron</code>:</p>
-<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Add to your .Renviron file (edit with usethis::edit_r_environ())</span></span>
-<span><span class="fu">usethis</span><span class="fu">::</span><span class="fu">edit_r_environ</span><span class="op">(</span><span class="st">"project"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Add these lines:</span></span>
-<span><span class="va">PETROGRAPHER_HPC_HOST</span><span class="op">=</span><span class="st">"hpg"</span></span>
-<span><span class="va">PETROGRAPHER_HPC_BASE_DIR</span><span class="op">=</span><span class="st">"/blue/your_lab/your_user"</span></span></code></pre></div>
-<p>Then restart R and train:</p>
-<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<p>For running inference with pretrained models:</p>
+<div class="sourceCode" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://flmnh-ai.github.io/petrographer/">petrographer</a></span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># HPC settings are read from environment variables</span></span>
-<span><span class="va">model_dir</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/shell_mixed"</span>,</span>
-<span>  output_name <span class="op">=</span> <span class="st">"shell_detector_v3"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  hpc_user <span class="op">=</span> <span class="st">"your_user"</span>  <span class="co"># optional if different from system user</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-<p><strong>Alternative</strong>: Override environment variables if needed:</p>
-<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">model_dir</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/shell_mixed"</span>, </span>
-<span>  output_name <span class="op">=</span> <span class="st">"shell_detector_v3"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  hpc_host <span class="op">=</span> <span class="st">"different.cluster.edu"</span>,</span>
-<span>  hpc_base_dir <span class="op">=</span> <span class="st">"/different/path"</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-<p>Safety</p>
-<ul>
-<li>No remote deletion is performed automatically.</li>
-<li>Use <code>rsync_mode = "mirror"</code> to avoid accumulating stale files across reruns.</li>
-</ul>
-<div class="section level3">
-<h3 id="key-features">Key Features<a class="anchor" aria-label="anchor" href="#key-features"></a>
-</h3>
-<ul>
-<li>
-<strong>Advanced Instance Segmentation</strong>: Uses Detectron2 Mask R-CNN with SAHI for high-quality detection</li>
-<li>
-<strong>Morphological Analysis</strong>: Comprehensive particle characterization (size, shape, orientation, etc.)</li>
-<li>
-<strong>Unified Training Interface</strong>: Local and HPC training through R functions with automatic job management</li>
-<li>
-<strong>Interactive Analysis</strong>: Modern R workflow using <code>cli</code>, <code>fs</code>, and <code>glue</code> for professional output</li>
-<li>
-<strong>Batch Processing</strong>: Efficient processing of large image collections</li>
-<li>
-<strong>Model Management</strong>: Automatic model download and caching system</li>
-</ul>
-</div>
+<span><span class="co"># Load model from public hub</span></span>
+<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"inclusions"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Run prediction on an image</span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict.html">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"my_image.jpg"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Analyze results</span></span>
+<span><span class="fu"><a href="reference/summarize_by_image.html">summarize_by_image</a></span><span class="op">(</span><span class="va">results</span><span class="op">)</span></span>
+<span><span class="fu"><a href="reference/get_population_stats.html">get_population_stats</a></span><span class="op">(</span><span class="va">results</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
-<h2 id="installation-and-setup">Installation and Setup<a class="anchor" aria-label="anchor" href="#installation-and-setup"></a>
+<h2 id="quick-start-developers">Quick Start (Developers)<a class="anchor" aria-label="anchor" href="#quick-start-developers"></a>
 </h2>
+<p>For training custom models:</p>
+<div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://flmnh-ai.github.io/petrographer/">petrographer</a></span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Validate dataset structure</span></span>
+<span><span class="fu"><a href="reference/validate_dataset.html">validate_dataset</a></span><span class="op">(</span><span class="st">"data/processed/my_dataset"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Train model (automatically saves to .petrographer/)</span></span>
+<span><span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
+<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
+<span>  output_name <span class="op">=</span> <span class="st">"my_model"</span>,</span>
+<span>  num_classes <span class="op">=</span> <span class="fl">5</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Load your trained model</span></span>
+<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu">load_model</span><span class="op">(</span><span class="st">"my_model"</span><span class="op">)</span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict.html">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"test_image.jpg"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level2">
+<h2 id="table-of-contents">Table of Contents<a class="anchor" aria-label="anchor" href="#table-of-contents"></a>
+</h2>
+<ul>
+<li><a href="#installation">Installation</a></li>
+<li><a href="#model-hub">Model Hub</a></li>
+<li><a href="#training-models">Training Models</a></li>
+<li><a href="#running-predictions">Running Predictions</a></li>
+<li><a href="#core-functions">Core Functions</a></li>
+<li><a href="#dataset-management">Dataset Management</a></li>
+<li><a href="#hpc-training-slurm">HPC Training</a></li>
+<li><a href="#documentation">Documentation</a></li>
+<li><a href="#configuration">Configuration</a></li>
+<li><a href="#troubleshooting">Troubleshooting</a></li>
+<li><a href="#citation">Citation</a></li>
+</ul>
+</div>
+<div class="section level2">
+<h2 id="installation">Installation<a class="anchor" aria-label="anchor" href="#installation"></a>
+</h2>
+<div class="sourceCode" id="cb3"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Install from GitHub</span></span>
+<span><span class="fu">remotes</span><span class="fu">::</span><span class="fu">install_github</span><span class="op">(</span><span class="st">"flmnh-ai/petrographer"</span><span class="op">)</span></span></code></pre></div>
 <div class="section level3">
 <h3 id="prerequisites">Prerequisites<a class="anchor" aria-label="anchor" href="#prerequisites"></a>
 </h3>
 <ul>
+<li><strong>R 4.1+</strong></li>
 <li>
-<strong>Python 3.8+</strong> with detectron2, SAHI, and dependencies</li>
+<strong>Python 3.8+</strong> with detectron2, sahi, torch, torchvision, opencv-python, scikit-image</li>
 <li>
-<strong>R 4.0+</strong> with required packages</li>
-<li>
-<strong>CUDA-capable GPU</strong> (recommended for training)</li>
+<strong>GPU recommended</strong> for training (CPU works fine for inference)</li>
 </ul>
-</div>
-<div class="section level3">
-<h3 id="r-dependencies">R Dependencies<a class="anchor" aria-label="anchor" href="#r-dependencies"></a>
-</h3>
-<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="https://rdrr.io/r/utils/install.packages.html" class="external-link">install.packages</a></span><span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"reticulate"</span>, <span class="st">"tidyverse"</span>, <span class="st">"magick"</span>, <span class="st">"scico"</span>, </span>
-<span>                   <span class="st">"patchwork"</span>, <span class="st">"glue"</span>, <span class="st">"cli"</span>, <span class="st">"fs"</span>, <span class="st">"future"</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
-</div>
-<div class="section level3">
-<h3 id="python-dependencies">Python Dependencies<a class="anchor" aria-label="anchor" href="#python-dependencies"></a>
-</h3>
-<p>The package automatically manages Python dependencies. Required packages: - detectron2 - sahi<br>
-- torch, torchvision - opencv-python - scikit-image</p>
+<p>Python dependencies are managed automatically via <code>reticulate</code>. The package will guide you through setup on first use.</p>
 </div>
 </div>
 <div class="section level2">
-<h2 id="quick-start">Quick Start<a class="anchor" aria-label="anchor" href="#quick-start"></a>
+<h2 id="model-hub">Model Hub<a class="anchor" aria-label="anchor" href="#model-hub"></a>
+</h2>
+<p>Models are managed via the <a href="https://pins.rstudio.com/" class="external-link">pins</a> package with automatic versioning and caching:</p>
+<div class="section level3">
+<h3 id="public-hub">Public Hub<a class="anchor" aria-label="anchor" href="#public-hub"></a>
+</h3>
+<p>Hosted at: - Models: <a href="https://flmnh-ai.github.io/petrographer/models/" class="uri">https://flmnh-ai.github.io/petrographer/models/</a> - Datasets: <a href="https://flmnh-ai.github.io/petrographer/datasets/" class="uri">https://flmnh-ai.github.io/petrographer/datasets/</a></p>
+<div class="sourceCode" id="cb4"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Download and load pretrained model</span></span>
+<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"shell_v3"</span>, device <span class="op">=</span> <span class="st">"cpu"</span>, confidence <span class="op">=</span> <span class="fl">0.5</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Browse available models</span></span>
+<span><span class="fu"><a href="reference/list_models.html">list_models</a></span><span class="op">(</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Get model details</span></span>
+<span><span class="fu"><a href="reference/model_info.html">model_info</a></span><span class="op">(</span><span class="st">"shell_v3"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="local-training-board">Local Training Board<a class="anchor" aria-label="anchor" href="#local-training-board"></a>
+</h3>
+<p>Automatically created at <code>.petrographer/</code> in your project when training models:</p>
+<div class="sourceCode" id="cb5"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># List your locally trained models</span></span>
+<span><span class="fu"><a href="reference/list_trained_models.html">list_trained_models</a></span><span class="op">(</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Load a local model (convenience wrapper)</span></span>
+<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu">load_model</span><span class="op">(</span><span class="st">"my_model"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Or explicitly specify local board</span></span>
+<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"my_model"</span>, board <span class="op">=</span> <span class="st">"local"</span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="custom-boards">Custom Boards<a class="anchor" aria-label="anchor" href="#custom-boards"></a>
+</h3>
+<p>Advanced users can specify their own boards:</p>
+<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">my_board</span> <span class="op">&lt;-</span> <span class="fu">pins</span><span class="fu">::</span><span class="fu"><a href="https://pins.rstudio.com/reference/board_folder.html" class="external-link">board_folder</a></span><span class="op">(</span><span class="st">"~/shared-models"</span>, versioned <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span></span>
+<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"model_id"</span>, board <span class="op">=</span> <span class="va">my_board</span><span class="op">)</span></span></code></pre></div>
+</div>
+</div>
+<div class="section level2">
+<h2 id="training-models">Training Models<a class="anchor" aria-label="anchor" href="#training-models"></a>
 </h2>
 <div class="section level3">
-<h3 id="id_1-load-the-package-functions">1. Load the Package Functions<a class="anchor" aria-label="anchor" href="#id_1-load-the-package-functions"></a>
+<h3 id="local-training">Local Training<a class="anchor" aria-label="anchor" href="#local-training"></a>
 </h3>
-<div class="sourceCode" id="cb6"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Load all package functions</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/source.html" class="external-link">source</a></span><span class="op">(</span><span class="st">"R/model.R"</span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/source.html" class="external-link">source</a></span><span class="op">(</span><span class="st">"R/training.R"</span><span class="op">)</span> </span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/source.html" class="external-link">source</a></span><span class="op">(</span><span class="st">"R/prediction.R"</span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/source.html" class="external-link">source</a></span><span class="op">(</span><span class="st">"R/data_utils.R"</span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/source.html" class="external-link">source</a></span><span class="op">(</span><span class="st">"R/summary.R"</span><span class="op">)</span></span></code></pre></div>
-</div>
-<div class="section level3">
-<h3 id="id_2-data-preparation">2. Data Preparation<a class="anchor" aria-label="anchor" href="#id_2-data-preparation"></a>
-</h3>
-<p>Organize your data in COCO format:</p>
-<pre><code>data/processed/
-├── shell_mixed/         # 5-class shell detection
-├── inclusions/          # 2-class inclusion detection
-├── background_removal/  # 2-class background removal
-│   ├── train/
-│   │   ├── _annotations.coco.json
-│   │   └── [training images]
-│   └── val/
-│       ├── _annotations.coco.json
-│       └── [validation images]</code></pre>
-</div>
-<div class="section level3">
-<h3 id="id_3-model-training">3. Model Training<a class="anchor" aria-label="anchor" href="#id_3-model-training"></a>
-</h3>
-<div class="section level4">
-<h4 id="local-training">Local Training<a class="anchor" aria-label="anchor" href="#local-training"></a>
-</h4>
-<div class="sourceCode" id="cb8"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">model_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/shell_mixed"</span>,</span>
-<span>  output_name <span class="op">=</span> <span class="st">"shell_detector_v3"</span>,</span>
-<span>  max_iter <span class="op">=</span> <span class="fl">2000</span>,</span>
+<div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
+<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/shell_dataset"</span>,</span>
+<span>  output_name <span class="op">=</span> <span class="st">"shell_detector_v4"</span>,</span>
 <span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  device <span class="op">=</span> <span class="st">"cuda"</span>  <span class="co"># or "cpu", "mps"</span></span>
+<span>  max_iter <span class="op">=</span> <span class="fl">2000</span>,      <span class="co"># default for fine-tuning</span></span>
+<span>  freeze_at <span class="op">=</span> <span class="fl">2</span>,        <span class="co"># freeze stem + res2 (default)</span></span>
+<span>  backbone <span class="op">=</span> <span class="st">"resnet50"</span>, <span class="co"># resnet50, resnet101, resnext101</span></span>
+<span>  device <span class="op">=</span> <span class="st">"cuda"</span>        <span class="co"># or "cpu", "mps"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
-</div>
-<div class="section level4">
-<h4 id="hpc-training-slurm">HPC Training (SLURM)<a class="anchor" aria-label="anchor" href="#hpc-training-slurm"></a>
-</h4>
-<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">model_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/inclusions"</span>, </span>
-<span>  output_name <span class="op">=</span> <span class="st">"inclusions_v2"</span>,</span>
-<span>  max_iter <span class="op">=</span> <span class="fl">4000</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">2</span>,</span>
-<span>  hpc_host <span class="op">=</span> <span class="st">"hpg.rc.ufl.edu"</span>,</span>
-<span>  hpc_user <span class="op">=</span> <span class="st">"your.username"</span>,</span>
-<span>  hpc_base_dir <span class="op">=</span> <span class="st">"/blue/your.group/your.username"</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
 </div>
 <div class="section level3">
-<h3 id="id_4-model-loading-and-prediction">4. Model Loading and Prediction<a class="anchor" aria-label="anchor" href="#id_4-model-loading-and-prediction"></a>
+<h3 id="training-configuration">Training Configuration<a class="anchor" aria-label="anchor" href="#training-configuration"></a>
 </h3>
+<p>Default parameters optimized for fine-tuning:</p>
+<ul>
+<li>
+<code>max_iter = 2000</code> - Training iterations</li>
+<li>
+<code>ims_per_batch = NA</code> - Auto-resolves to 2 images per GPU</li>
+<li>
+<code>freeze_at = 2</code> - Freeze backbone stem + res2 layers</li>
+<li>
+<code>learning_rate = 0.00025</code> - Base LR (auto-scaled by batch size and freeze_at)</li>
+<li>
+<code>backbone = "resnet50"</code> - Options: resnet50, resnet101, resnext101, or any Detectron2 model zoo key</li>
+</ul>
+<p>The package automatically: - Validates dataset structure - Computes optimal batch sizes and learning rates - Handles version conflicts - Saves model to <code>.petrographer/models/</code> with full metadata - Creates training manifests with validation metrics</p>
+</div>
+<div class="section level3">
+<h3 id="dataset-preparation">Dataset Preparation<a class="anchor" aria-label="anchor" href="#dataset-preparation"></a>
+</h3>
+<p>Organize data in COCO format:</p>
+<pre><code>data/processed/my_dataset/
+├── train/
+│   ├── _annotations.coco.json
+│   └── [training images]
+└── val/
+    ├── _annotations.coco.json
+    └── [validation images]</code></pre>
+<p>Validate before training:</p>
+<div class="sourceCode" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu"><a href="reference/validate_dataset.html">validate_dataset</a></span><span class="op">(</span><span class="st">"data/processed/my_dataset"</span><span class="op">)</span></span></code></pre></div>
+<p>For images with highly variable sizes, use SAHI slicing:</p>
 <div class="sourceCode" id="cb10"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Load trained model (automatically downloads if needed)</span></span>
-<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/load_model.html">load_model</a></span><span class="op">(</span>confidence <span class="op">=</span> <span class="fl">0.5</span>, device <span class="op">=</span> <span class="st">"cpu"</span><span class="op">)</span></span>
+<code class="sourceCode R"><span><span class="fu"><a href="reference/slice_dataset.html">slice_dataset</a></span><span class="op">(</span></span>
+<span>  input_dir <span class="op">=</span> <span class="st">"data/raw/my_dataset"</span>,</span>
+<span>  output_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset_sliced"</span>,</span>
+<span>  slice_size <span class="op">=</span> <span class="fl">512</span>,</span>
+<span>  overlap <span class="op">=</span> <span class="fl">0.2</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+</div>
+<div class="section level2">
+<h2 id="running-predictions">Running Predictions<a class="anchor" aria-label="anchor" href="#running-predictions"></a>
+</h2>
+<div class="section level3">
+<h3 id="single-image">Single Image<a class="anchor" aria-label="anchor" href="#single-image"></a>
+</h3>
+<div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Simple prediction (saves visualization by default)</span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict.html">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"image.jpg"</span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Analyze single image</span></span>
-<span><span class="va">result</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict_image.html">predict_image</a></span><span class="op">(</span></span>
-<span>  image_path <span class="op">=</span> <span class="st">"data/raw/sample_image.jpg"</span>,</span>
+<span><span class="co"># With custom SAHI parameters</span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict_image.html">predict_image</a></span><span class="op">(</span></span>
+<span>  image_path <span class="op">=</span> <span class="st">"image.jpg"</span>,</span>
 <span>  model <span class="op">=</span> <span class="va">model</span>,</span>
 <span>  use_slicing <span class="op">=</span> <span class="cn">TRUE</span>,</span>
 <span>  slice_size <span class="op">=</span> <span class="fl">512</span>,</span>
-<span>  overlap <span class="op">=</span> <span class="fl">0.2</span></span>
-<span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Batch processing</span></span>
-<span><span class="va">batch_result</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict_images.html">predict_images</a></span><span class="op">(</span></span>
-<span>  input_dir <span class="op">=</span> <span class="st">"data/raw/batch_images/"</span>,</span>
-<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
-<span>  output_dir <span class="op">=</span> <span class="st">"results/batch_analysis"</span></span>
+<span>  overlap <span class="op">=</span> <span class="fl">0.2</span>,</span>
+<span>  save_visualizations <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
-<h3 id="id_5-analysis-and-visualization">5. Analysis and Visualization<a class="anchor" aria-label="anchor" href="#id_5-analysis-and-visualization"></a>
+<h3 id="batch-processing">Batch Processing<a class="anchor" aria-label="anchor" href="#batch-processing"></a>
 </h3>
-<p>Use the analysis notebooks: - <code>petrography_analysis.qmd</code> - Main analysis workflow - <code>training/training_shell.qmd</code> - Shell detection training - <code>training/training_inclusions.qmd</code> - Inclusion detection training<br>
-- <code>training/training_background_removal.qmd</code> - Background removal training</p>
+<div class="sourceCode" id="cb12"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict_images.html">predict_images</a></span><span class="op">(</span></span>
+<span>  input_dir <span class="op">=</span> <span class="st">"images/"</span>,</span>
+<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
+<span>  output_dir <span class="op">=</span> <span class="st">"results/"</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="model-evaluation">Model Evaluation<a class="anchor" aria-label="anchor" href="#model-evaluation"></a>
+</h3>
+<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Evaluate training metrics</span></span>
+<span><span class="fu"><a href="reference/evaluate_training.html">evaluate_training</a></span><span class="op">(</span><span class="st">"Detectron2_Models/my_model"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Evaluate on COCO dataset</span></span>
+<span><span class="va">metrics</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/evaluate_model_sahi.html">evaluate_model_sahi</a></span><span class="op">(</span></span>
+<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
+<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/test_dataset"</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+</div>
+<div class="section level3">
+<h3 id="analysis">Analysis<a class="anchor" aria-label="anchor" href="#analysis"></a>
+</h3>
+<p>Each detected object includes comprehensive morphological properties:</p>
+<ul>
+<li>
+<strong>Basic metrics</strong>: Area, perimeter, centroid coordinates</li>
+<li>
+<strong>Shape descriptors</strong>: Eccentricity, orientation, circularity, aspect ratio</li>
+<li>
+<strong>Advanced features</strong>: Solidity, extent, major/minor axis lengths</li>
+</ul>
+<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Per-image summary statistics</span></span>
+<span><span class="va">image_stats</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/summarize_by_image.html">summarize_by_image</a></span><span class="op">(</span><span class="va">results</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Population-level statistics</span></span>
+<span><span class="va">pop_stats</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/get_population_stats.html">get_population_stats</a></span><span class="op">(</span><span class="va">results</span><span class="op">)</span></span></code></pre></div>
 </div>
 </div>
 <div class="section level2">
@@ -248,9 +311,27 @@
 </h3>
 <ul>
 <li>
-<code><a href="reference/load_model.html">load_model()</a></code> - Load detection model with caching</li>
+<code><a href="reference/from_pretrained.html">from_pretrained()</a></code> - Load model from hub, local board, or custom board</li>
 <li>
-<code>download_model()</code> - Download pretrained models</li>
+<code>load_model()</code> - Convenience wrapper for locally trained models</li>
+<li>
+<code><a href="reference/list_models.html">list_models()</a></code> / <code><a href="reference/list_trained_models.html">list_trained_models()</a></code> - List available models</li>
+<li>
+<code><a href="reference/model_info.html">model_info()</a></code> - Show model metadata and validation metrics</li>
+<li>
+<code><a href="reference/pin_model.html">pin_model()</a></code> - Publish model to board (maintainers only)</li>
+</ul>
+</div>
+<div class="section level3">
+<h3 id="dataset-management">Dataset Management<a class="anchor" aria-label="anchor" href="#dataset-management"></a>
+</h3>
+<ul>
+<li>
+<code><a href="reference/validate_dataset.html">validate_dataset()</a></code> - Check COCO format and show diagnostics</li>
+<li>
+<code><a href="reference/slice_dataset.html">slice_dataset()</a></code> - SAHI dataset slicing for mixed image sizes</li>
+<li>
+<code><a href="reference/pin_dataset.html">pin_dataset()</a></code> / <code><a href="reference/list_datasets.html">list_datasets()</a></code> - Dataset versioning and distribution</li>
 </ul>
 </div>
 <div class="section level3">
@@ -260,7 +341,9 @@
 <li>
 <code><a href="reference/train_model.html">train_model()</a></code> - Unified training interface (local or HPC)</li>
 <li>
-<code><a href="reference/evaluate_training.html">evaluate_training()</a></code> - Analyze training metrics and logs</li>
+<code><a href="reference/evaluate_training.html">evaluate_training()</a></code> - Parse and visualize training metrics</li>
+<li>
+<code><a href="reference/prepare_training_config.html">prepare_training_config()</a></code> - Validate training parameters</li>
 </ul>
 </div>
 <div class="section level3">
@@ -268,101 +351,136 @@
 </h3>
 <ul>
 <li>
-<code><a href="reference/predict_image.html">predict_image()</a></code> - Analyze single image with morphological analysis</li>
+<code><a href="reference/predict.html">predict()</a></code> - S3 method for PetrographyModel objects</li>
 <li>
-<code><a href="reference/predict_images.html">predict_images()</a></code> - Process multiple images efficiently</li>
+<code><a href="reference/predict_image.html">predict_image()</a></code> - Single image inference with SAHI + morphology</li>
+<li>
+<code><a href="reference/predict_images.html">predict_images()</a></code> - Batch processing with parallel support</li>
+<li>
+<code><a href="reference/evaluate_model_sahi.html">evaluate_model_sahi()</a></code> - COCO evaluation metrics</li>
 </ul>
 </div>
 <div class="section level3">
-<h3 id="analysis">Analysis<a class="anchor" aria-label="anchor" href="#analysis"></a>
+<h3 id="analysis-1">Analysis<a class="anchor" aria-label="anchor" href="#analysis-1"></a>
 </h3>
 <ul>
 <li>
-<code>enhance_results()</code> - Add derived morphological properties<br>
-</li>
+<code><a href="reference/summarize_by_image.html">summarize_by_image()</a></code> - Per-image statistics</li>
 <li>
-<code><a href="reference/summarize_by_image.html">summarize_by_image()</a></code> - Per-image statistical summaries</li>
-<li>
-<code><a href="reference/get_population_stats.html">get_population_stats()</a></code> - Overall population metrics</li>
+<code><a href="reference/get_population_stats.html">get_population_stats()</a></code> - Population-level metrics</li>
 </ul>
 </div>
 </div>
 <div class="section level2">
-<h2 id="output-files">Output Files<a class="anchor" aria-label="anchor" href="#output-files"></a>
+<h2 id="hpc-training-slurm">HPC Training (SLURM)<a class="anchor" aria-label="anchor" href="#hpc-training-slurm"></a>
 </h2>
+<p>For training on HPC clusters with SLURM (e.g., UF HiPerGator):</p>
 <div class="section level3">
-<h3 id="prediction-results">Prediction Results<a class="anchor" aria-label="anchor" href="#prediction-results"></a>
+<h3 id="one-time-setup">One-Time Setup<a class="anchor" aria-label="anchor" href="#one-time-setup"></a>
 </h3>
+<p>Configure HPC defaults in <code>.Renviron</code>:</p>
+<div class="sourceCode" id="cb15"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="fu">usethis</span><span class="fu">::</span><span class="fu">edit_r_environ</span><span class="op">(</span><span class="st">"project"</span><span class="op">)</span></span></code></pre></div>
+<p>Add these lines:</p>
+<pre><code><span><span class="va">PETROGRAPHER_HPC_HOST</span><span class="op">=</span><span class="st">"hpg"</span></span>
+<span><span class="va">PETROGRAPHER_HPC_BASE_DIR</span><span class="op">=</span><span class="st">"/blue/yourlab/youruser"</span></span></code></pre>
+<p>Restart R for changes to take effect.</p>
+</div>
+<div class="section level3">
+<h3 id="hpc-training">HPC Training<a class="anchor" aria-label="anchor" href="#hpc-training"></a>
+</h3>
+<div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Triggers HPC mode automatically when hpc_user is provided</span></span>
+<span><span class="va">model_dir</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
+<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
+<span>  output_name <span class="op">=</span> <span class="st">"my_model"</span>,</span>
+<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
+<span>  hpc_user <span class="op">=</span> <span class="st">"youruser"</span></span>
+<span><span class="op">)</span></span></code></pre></div>
+<p>The package automatically: - Uploads dataset and training script via rsync - Submits SLURM job with optimal GPU resources - Monitors job status with progress updates - Downloads trained model when complete - Cleans up remote files (data preserved by default)</p>
+</div>
+<div class="section level3">
+<h3 id="hpc-job-control">HPC Job Control<a class="anchor" aria-label="anchor" href="#hpc-job-control"></a>
+</h3>
+<div class="sourceCode" id="cb18"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="co"># Monitor job status</span></span>
+<span><span class="fu">hpg_status</span><span class="op">(</span><span class="va">job</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Wait for completion with progress</span></span>
+<span><span class="fu">hpg_wait</span><span class="op">(</span><span class="va">job</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Cancel running job</span></span>
+<span><span class="fu">hpg_cancel</span><span class="op">(</span><span class="va">job</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Get job details</span></span>
+<span><span class="fu">hpg_job_info</span><span class="op">(</span><span class="va">job</span><span class="op">)</span></span></code></pre></div>
+</div>
+</div>
+<div class="section level2">
+<h2 id="documentation">Documentation<a class="anchor" aria-label="anchor" href="#documentation"></a>
+</h2>
 <ul>
 <li>
-<strong>CSV files</strong>: Detailed morphological measurements per object</li>
+<strong>Website</strong>: <a href="https://flmnh-ai.github.io/petrographer/" class="uri">https://flmnh-ai.github.io/petrographer/</a>
+</li>
 <li>
-<strong>Visualizations</strong>: Images with detected objects and confidence scores</li>
-<li>
-<strong>Summary statistics</strong>: Per-image and population-level metrics</li>
-</ul>
-</div>
-<div class="section level3">
-<h3 id="morphological-properties">Morphological Properties<a class="anchor" aria-label="anchor" href="#morphological-properties"></a>
-</h3>
-<p>Each detected object includes: - <strong>Basic metrics</strong>: Area, perimeter, centroid coordinates - <strong>Shape descriptors</strong>: Eccentricity, orientation, circularity, aspect ratio<br>
-- <strong>Advanced features</strong>: Solidity, extent, major/minor axis lengths - <strong>Derived metrics</strong>: Log area, size categories, shape categories</p>
-</div>
-<div class="section level3">
-<h3 id="training-evaluation">Training Evaluation<a class="anchor" aria-label="anchor" href="#training-evaluation"></a>
-</h3>
+<strong>Vignettes</strong>:
 <ul>
 <li>
-<strong>Training curves</strong>: Loss progression over iterations</li>
+<a href="https://flmnh-ai.github.io/petrographer/articles/model-library.html">Model Library</a> - Browse and compare trained models</li>
 <li>
-<strong>Validation metrics</strong>: Model performance on validation set</li>
+<a href="https://flmnh-ai.github.io/petrographer/articles/training-models.html">Training Models</a> - Complete training guide</li>
 <li>
-<strong>Learning rate schedule</strong>: LR changes during training</li>
+<a href="https://flmnh-ai.github.io/petrographer/articles/whole-slide-basics.html">Whole Slide Basics</a> - Working with large images</li>
 </ul>
-</div>
+</li>
+<li>
+<strong>Example Notebooks</strong>: See <code>inst/notebooks/</code> for complete workflows:
+<ul>
+<li>
+<code>model_from_pretrained.qmd</code> - Loading and using pretrained models</li>
+<li>
+<code>petrography_analysis.qmd</code> - End-to-end analysis workflow</li>
+<li>
+<code>training_*.qmd</code> - Training examples for different use cases</li>
+</ul>
+</li>
+</ul>
 </div>
 <div class="section level2">
 <h2 id="configuration">Configuration<a class="anchor" aria-label="anchor" href="#configuration"></a>
 </h2>
 <div class="section level3">
-<h3 id="training-parameters">Training Parameters<a class="anchor" aria-label="anchor" href="#training-parameters"></a>
-</h3>
-<p>Key parameters for <code><a href="reference/train_model.html">train_model()</a></code>: - <code>max_iter</code>: Training iterations (2000-4000 typical) - <code>learning_rate</code>: Base learning rate (0.00025-0.001) - <code>num_classes</code>: Number of object classes - <code>eval_period</code>: Validation frequency (100-500 iterations) - <code>device</code>: “cpu”, “cuda”, or “mps”</p>
-</div>
-<div class="section level3">
 <h3 id="sahi-parameters">SAHI Parameters<a class="anchor" aria-label="anchor" href="#sahi-parameters"></a>
 </h3>
-<p>Optimize for your data: - <code>slice_size</code>: Slice dimensions (512 recommended) - <code>overlap</code>: Overlap between slices (0.2 typical) - <code>confidence</code>: Detection threshold (0.3-0.7)</p>
+<p>Optimize for your data:</p>
+<div class="sourceCode" id="cb19"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span></span>
+<span>  <span class="st">"shell_v3"</span>,</span>
+<span>  confidence <span class="op">=</span> <span class="fl">0.5</span>,    <span class="co"># Detection threshold (0.3-0.7 typical)</span></span>
+<span>  device <span class="op">=</span> <span class="st">"cuda"</span>      <span class="co"># "cpu", "cuda", or "mps"</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict_image.html">predict_image</a></span><span class="op">(</span></span>
+<span>  image_path <span class="op">=</span> <span class="st">"image.jpg"</span>,</span>
+<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
+<span>  slice_size <span class="op">=</span> <span class="fl">512</span>,    <span class="co"># Slice dimensions (512 recommended)</span></span>
+<span>  overlap <span class="op">=</span> <span class="fl">0.2</span>        <span class="co"># Overlap between slices (0.2 typical)</span></span>
+<span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
-<h3 id="hpc-configuration">HPC Configuration<a class="anchor" aria-label="anchor" href="#hpc-configuration"></a>
+<h3 id="environment-variables">Environment Variables<a class="anchor" aria-label="anchor" href="#environment-variables"></a>
 </h3>
-<p>For SLURM training: - <code>hpc_host</code>: SSH hostname (e.g., “hpg.rc.ufl.edu”)<br>
-- <code>hpc_user</code>: Your username - <code>hpc_base_dir</code>: Remote working directory - Automatic file sync and job monitoring</p>
-</div>
-</div>
-<div class="section level2">
-<h2 id="performance-optimization">Performance Optimization<a class="anchor" aria-label="anchor" href="#performance-optimization"></a>
-</h2>
-<div class="section level3">
-<h3 id="for-dense-small-objects-200-per-image">For Dense Small Objects (200+ per image)<a class="anchor" aria-label="anchor" href="#for-dense-small-objects-200-per-image"></a>
-</h3>
+<p>Optional configuration:</p>
 <ul>
-<li>Keep <code>ROI_HEADS.BATCH_SIZE_PER_IMAGE = 512</code>
-</li>
-<li>Use moderate batch sizes (<code>IMS_PER_BATCH = 4</code>)</li>
-<li>Enable mixed precision training (AMP)</li>
-<li>Consider higher <code>TEST.DETECTIONS_PER_IMAGE</code> values</li>
-</ul>
-</div>
-<div class="section level3">
-<h3 id="training-speed">Training Speed<a class="anchor" aria-label="anchor" href="#training-speed"></a>
-</h3>
-<ul>
-<li>Use <code>IMS_PER_BATCH = 4</code> for good speed/accuracy balance</li>
-<li>Enable AMP for 30-50% speedup on modern GPUs</li>
-<li>Optimize <code>NUM_WORKERS</code> to match available CPU cores</li>
-<li>Use 4-hour SLURM time limits for safety</li>
+<li>
+<code>PETROGRAPHER_HUB_URL</code> - Custom model hub URL</li>
+<li>
+<code>PETROGRAPHER_BOARD_PATH</code> - Custom local board location</li>
+<li>
+<code>PETROGRAPHER_HPC_HOST</code> - Default HPC hostname</li>
+<li>
+<code>PETROGRAPHER_HPC_BASE_DIR</code> - Default HPC working directory</li>
 </ul>
 </div>
 </div>
@@ -374,11 +492,12 @@
 </h3>
 <ul>
 <li>
-<strong>CUDA out of memory</strong>: Reduce <code>IMS_PER_BATCH</code> (try 2-4)</li>
+<strong>CUDA out of memory</strong>: Reduce <code>ims_per_batch</code> (try 1-2) or use smaller images</li>
 <li>
-<strong>Slow training</strong>: Check GPU utilization, enable AMP</li>
+<strong>Slow training</strong>: Check GPU utilization, consider different backbone</li>
 <li>
-<strong>Job timeouts</strong>: Training time scales with image resolution and object density</li>
+<strong>Poor convergence</strong>: Increase <code>max_iter</code> or adjust <code>learning_rate</code>
+</li>
 </ul>
 </div>
 <div class="section level3">
@@ -398,96 +517,112 @@
 </h3>
 <ul>
 <li>
-<strong>Import errors</strong>: Check <code>py_require()</code> calls in notebooks</li>
+<strong>Import errors</strong>: Check Python environment with <code><a href="https://rstudio.github.io/reticulate/reference/py_config.html" class="external-link">reticulate::py_config()</a></code>
+</li>
 <li>
-<strong>Environment issues</strong>: Restart R session, verify Python environment</li>
+<strong>Environment issues</strong>: Restart R session, reinstall Python packages</li>
 <li>
-<strong>Path problems</strong>: Use absolute paths, check file existence</li>
+<strong>Path problems</strong>: Use absolute paths with <code><a href="https://fs.r-lib.org/reference/path_math.html" class="external-link">fs::path_abs()</a></code>
+</li>
+</ul>
+</div>
+<div class="section level3">
+<h3 id="hpc-issues">HPC Issues<a class="anchor" aria-label="anchor" href="#hpc-issues"></a>
+</h3>
+<ul>
+<li>
+<strong>Connection timeout</strong>: Check SSH config, verify Duo authentication</li>
+<li>
+<strong>Job failures</strong>: Check SLURM logs with <code>hpg_job_info(job)</code>
+</li>
+<li>
+<strong>Transfer errors</strong>: Verify paths and permissions on remote system</li>
 </ul>
 </div>
 </div>
 <div class="section level2">
 <h2 id="file-structure">File Structure<a class="anchor" aria-label="anchor" href="#file-structure"></a>
 </h2>
-<pre><code>petrography/
-├── R/                          # Package functions
-│   ├── model.R                 # Model loading and management
-│   ├── training.R              # Training orchestration
-│   ├── hpc_utils.R             # HPC/SLURM utilities
-│   ├── prediction.R            # Prediction and analysis
-│   ├── data_utils.R            # Data processing utilities
-│   └── summary.R               # Summary statistics
-├── src/
-│   └── train.py                # Python training script
-├── training/                   # Training notebooks
-│   ├── training_shell.qmd
-│   ├── training_inclusions.qmd
-│   └── training_background_removal.qmd
-├── petrography_analysis.qmd    # Main analysis workflow
-└── data/processed/             # Training datasets (gitignored)</code></pre>
+<pre><code>petrographer/
+├── R/                            # Package functions
+│   ├── pins.R                    # Model/dataset distribution via pins
+│   ├── model.R                   # Model loading utilities
+│   ├── training.R                # Training orchestration (local + HPC)
+│   ├── prediction.R              # Inference + evaluation
+│   ├── dataset.R                 # Dataset utilities
+│   ├── morphology.R              # Property extraction via scikit-image
+│   └── summary.R                 # Analysis and aggregation
+├── inst/
+│   ├── python/
+│   │   ├── train.py              # Detectron2 training script
+│   │   └── slice_dataset.py      # SAHI dataset slicing utility
+│   └── notebooks/                # Example workflows
+├── vignettes/                    # Package documentation
+│   ├── model-library.qmd         # Browse trained models
+│   ├── training-models.qmd       # Training guide
+│   └── whole-slide-basics.qmd    # Large image workflows
+├── tests/                        # Unit tests
+└── .petrographer/                # Local training board (auto-created)
+    ├── models/                   # Trained models with versions
+    └── datasets/                 # Pinned datasets</code></pre>
+</div>
+<div class="section level2">
+<h2 id="performance-optimization">Performance Optimization<a class="anchor" aria-label="anchor" href="#performance-optimization"></a>
+</h2>
+<div class="section level3">
+<h3 id="for-dense-small-objects-200-per-image">For Dense Small Objects (200+ per image)<a class="anchor" aria-label="anchor" href="#for-dense-small-objects-200-per-image"></a>
+</h3>
+<ul>
+<li>Keep <code>ROI_HEADS.BATCH_SIZE_PER_IMAGE = 512</code> (default)</li>
+<li>Use SAHI slicing with <code>slice_size = 512</code> and <code>overlap = 0.2</code>
+</li>
+<li>Consider <code>TEST.DETECTIONS_PER_IMAGE = 1000</code> for very dense images</li>
+</ul>
+</div>
+<div class="section level3">
+<h3 id="training-speed">Training Speed<a class="anchor" aria-label="anchor" href="#training-speed"></a>
+</h3>
+<ul>
+<li>Use <code>ims_per_batch = 2</code> per GPU for good speed/accuracy balance</li>
+<li>ResNet-50 backbone is fastest, ResNeXt-101 for maximum accuracy</li>
+<li>Multi-GPU training automatically scales batch size and learning rate</li>
+</ul>
+</div>
+</div>
+<div class="section level2">
+<h2 id="contributing">Contributing<a class="anchor" aria-label="anchor" href="#contributing"></a>
+</h2>
+<p>This is research software under active development. Breaking changes may occur between versions. See <code>CLAUDE.md</code> for development guidelines and philosophy.</p>
 </div>
 <div class="section level2">
 <h2 id="citation">Citation<a class="anchor" aria-label="anchor" href="#citation"></a>
 </h2>
-<p>If you use this workflow in your research, please cite:</p>
-<div class="sourceCode" id="cb12"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb12-1"><a href="#cb12-1" tabindex="-1"></a><span class="co">@software{petrography_analysis,</span></span>
-<span id="cb12-2"><a href="#cb12-2" tabindex="-1"></a><span class="co">  title={Petrographic Image Analysis with Detectron2 and SAHI},</span></span>
-<span id="cb12-3"><a href="#cb12-3" tabindex="-1"></a><span class="co">  author={Nicolas Gauthier},</span></span>
-<span id="cb12-4"><a href="#cb12-4" tabindex="-1"></a><span class="co">  year={2025},</span></span>
-<span id="cb12-5"><a href="#cb12-5" tabindex="-1"></a><span class="co">  url={https://github.com/your-repo/petrography}</span></span>
-<span id="cb12-6"><a href="#cb12-6" tabindex="-1"></a><span class="co">}</span></span></code></pre></div>
+<p>If you use this package in your research, please cite:</p>
+<div class="sourceCode" id="cb21"><pre class="sourceCode bibtex"><code class="sourceCode bibtex"><span id="cb21-1"><a href="#cb21-1" tabindex="-1"></a><span class="co">@software{petrographer,</span></span>
+<span id="cb21-2"><a href="#cb21-2" tabindex="-1"></a><span class="co">  title = {petrographer: Petrographic Thin Section Analysis with Deep Learning},</span></span>
+<span id="cb21-3"><a href="#cb21-3" tabindex="-1"></a><span class="co">  author = {Nicolas Gauthier and Ashley Rutkoski},</span></span>
+<span id="cb21-4"><a href="#cb21-4" tabindex="-1"></a><span class="co">  year = {2025},</span></span>
+<span id="cb21-5"><a href="#cb21-5" tabindex="-1"></a><span class="co">  url = {https://github.com/flmnh-ai/petrographer},</span></span>
+<span id="cb21-6"><a href="#cb21-6" tabindex="-1"></a><span class="co">  note = {R package version 0.0.0.9000}</span></span>
+<span id="cb21-7"><a href="#cb21-7" tabindex="-1"></a><span class="co">}</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="acknowledgments">Acknowledgments<a class="anchor" aria-label="anchor" href="#acknowledgments"></a>
 </h2>
 <ul>
 <li>
-<a href="https://github.com/facebookresearch/detectron2" class="external-link">Detectron2</a> for instance segmentation</li>
+<a href="https://github.com/facebookresearch/detectron2" class="external-link">Detectron2</a> - Facebook AI Research’s detection framework</li>
 <li>
-<a href="https://github.com/obss/sahi" class="external-link">SAHI</a> for sliced inference</li>
+<a href="https://github.com/obss/sahi" class="external-link">SAHI</a> - Slicing aided hyper inference for small object detection</li>
 <li>
-<a href="https://rstudio.github.io/reticulate/" class="external-link">reticulate</a> for R-Python integration</li>
+<a href="https://rstudio.github.io/reticulate/" class="external-link">reticulate</a> - R-Python integration</li>
+<li>
+<a href="https://pins.rstudio.com/" class="external-link">pins</a> - Versioned data publishing and sharing</li>
+<li>
+<a href="https://github.com/flmnh-ai/hipergator" class="external-link">hipergator</a> - SLURM HPC integration for R</li>
 <li>Modern R utilities: <a href="https://cli.r-lib.org/" class="external-link">cli</a>, <a href="https://fs.r-lib.org/" class="external-link">fs</a>, <a href="https://glue.tidyverse.org/" class="external-link">glue</a>
 </li>
 </ul>
-</div>
-<div class="section level2">
-<h2 id="model-registry-pins">Model Registry (pins)<a class="anchor" aria-label="anchor" href="#model-registry-pins"></a>
-</h2>
-<p>Use the pins package to publish and load trained models by name. This is optional and off by default.</p>
-<p>Basic flow:</p>
-<div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://flmnh-ai.github.io/petrographer/">petrographer</a></span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># 1) Configure a board (defaults to local, versioned)</span></span>
-<span><span class="va">board</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/pg_board.html">pg_board</a></span><span class="op">(</span><span class="op">)</span>  <span class="co"># or set PETRO_PINS_PATH or PETRO_S3_BUCKET env vars</span></span>
-<span></span>
-<span><span class="co"># 2) Publish a trained model directory</span></span>
-<span><span class="fu"><a href="reference/publish_model.html">publish_model</a></span><span class="op">(</span></span>
-<span>  model_dir <span class="op">=</span> <span class="st">"Detectron2_Models/shell_detector_v3"</span>,</span>
-<span>  name <span class="op">=</span> <span class="st">"shell_detector_v3"</span>,</span>
-<span>  board <span class="op">=</span> <span class="va">board</span>,</span>
-<span>  metadata <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span>owner <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/Sys.info.html" class="external-link">Sys.info</a></span><span class="op">(</span><span class="op">)</span><span class="op">[[</span><span class="st">"user"</span><span class="op">]</span><span class="op">]</span><span class="op">)</span>,</span>
-<span>  include_metrics <span class="op">=</span> <span class="cn">TRUE</span></span>
-<span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># 3) Load a model by name</span></span>
-<span><span class="va">mdl</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/load_model.html">load_model</a></span><span class="op">(</span>model_name <span class="op">=</span> <span class="st">"shell_detector_v3"</span>, device <span class="op">=</span> <span class="st">"cpu"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># 4) Discover pins (optional; uses pins directly)</span></span>
-<span><span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/ns-load.html" class="external-link">requireNamespace</a></span><span class="op">(</span><span class="st">"pins"</span>, quietly <span class="op">=</span> <span class="cn">TRUE</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
-<span>  <span class="fu">pins</span><span class="fu">::</span><span class="fu">pin_list</span><span class="op">(</span><span class="va">board</span><span class="op">)</span></span>
-<span>  <span class="fu">pins</span><span class="fu">::</span><span class="fu">pin_meta</span><span class="op">(</span><span class="va">board</span>, <span class="st">"shell_detector_v3"</span><span class="op">)</span></span>
-<span><span class="op">}</span></span></code></pre></div>
-<p>Publish automatically after training:</p>
-<div class="sourceCode" id="cb14"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/shell_mixed"</span>,</span>
-<span>  output_name <span class="op">=</span> <span class="st">"shell_detector_v4"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  publish_after_train <span class="op">=</span> <span class="cn">TRUE</span>,</span>
-<span>  model_board <span class="op">=</span> <span class="fu"><a href="reference/pg_board.html">pg_board</a></span><span class="op">(</span><span class="op">)</span></span>
-<span><span class="op">)</span></span></code></pre></div>
 </div>
 </div>
   </main><aside class="col-md-3"><div class="links">
@@ -522,7 +657,13 @@
 </ul>
 </div>
 
-
+<div class="dev-status">
+<h2 data-toc-skip>Dev status</h2>
+<ul class="list-unstyled">
+<li><a href="https://lifecycle.r-lib.org/articles/stages.html#experimental" class="external-link"><img src="https://img.shields.io/badge/lifecycle-experimental-orange.svg" alt="Lifecycle: experimental"></a></li>
+<li><a href="https://github.com/flmnh-ai/petrographer/actions/workflows/R-CMD-check.yaml" class="external-link"><img src="https://github.com/flmnh-ai/petrographer/actions/workflows/R-CMD-check.yaml/badge.svg" alt="R-CMD-check"></a></li>
+</ul>
+</div>
 
   </aside>
 </div>
