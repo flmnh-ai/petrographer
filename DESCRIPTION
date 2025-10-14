@@ -34,11 +34,14 @@ Imports:
 Suggests:
     hipergator,
     here,
+    htmltools,
     magick,
     patchwork,
     quarto,
+    reactable,
     scico,
     testthat (>= 3.0.0),
+    tidyr,
     tools,
     withr
 Config/testthat/edition: 3
