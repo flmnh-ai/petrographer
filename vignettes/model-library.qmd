@@ -4,6 +4,8 @@ format:
   html:
     toc: true
     code-fold: false
+execute:
+  eval: false
 ---
 
 ```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
