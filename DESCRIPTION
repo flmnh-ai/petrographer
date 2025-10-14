@@ -36,6 +36,7 @@ Suggests:
     here,
     magick,
     patchwork,
+    quarto,
     scico,
     testthat (>= 3.0.0),
     tools,
