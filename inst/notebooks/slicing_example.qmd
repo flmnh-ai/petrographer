@@ -13,7 +13,7 @@ library(fs)
 library(here)
 library(petrographer)
 
-data_dir <- here("data/processed/inclusions_shell")
+data_dir <- here("data/processed/inclusions")
 ```
 
 ## Original Dataset
@@ -61,7 +61,7 @@ bind_rows(
 # Slice the dataset
 sliced_dir <- slice_dataset(
   input_dir = data_dir,
-  output_dir = here("data/processed/inclusions_shell_sliced"),
+  output_dir = here("data/processed/inclusions_sliced"),
   slice_size = 1024,
   overlap = 0.2,
   min_area_ratio = 0.1
@@ -143,9 +143,9 @@ bind_rows(
 
 ```{r train-sliced, eval=FALSE}
 # Train model on sliced data
-model_path <- train_model(
+model_id <- train_model(
   data_dir = sliced_dir,
-  output_name = "inclusions_sliced",
+  model_id = "inclusions_sliced",
   ims_per_batch = 12,
   num_workers = 12,
   hpc_cpus_per_task = 16,

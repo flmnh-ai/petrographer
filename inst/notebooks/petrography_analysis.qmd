@@ -62,7 +62,7 @@ We now use the optimized functions from `petrography_simple.R` which separate mo
 
 ```{r show-functions}
 cat("\n== Available Analysis Functions ==\n")
-cat("• load_model() - Load detection model once for reuse\n")
+cat("• from_pretrained() - Load detection model once for reuse\n")
 cat("• predict_image() - Analyze single image with loaded model\n")
 cat("• predict_images() - Process multiple images efficiently\n")
 cat("• evaluate_training() - Assess model performance\n")
@@ -78,11 +78,21 @@ Load the trained detection model once for efficient reuse across all predictions
 ```{r load-model}
 cat("\n== Loading Model ==\n")
 
-# Load the detection model with optimized settings
-model <- load_model(
+# Load the detection model - choose one approach:
+
+# Option A: Load from pretrained hub model (recommended for published models)
+model <- from_pretrained(
+  "shell_v3",  # Replace with your model ID
   confidence = config$confidence,
   device = config$device
 )
+
+# Option B: Load from local trained model directory
+# model <- from_pretrained(
+#   model_dir = "Detectron2_Models/your_model",
+#   confidence = config$confidence,
+#   device = config$device
+# )
 
 cat(sprintf("Model path: %s\n", path_file(model$model_path)))
 cat(sprintf("Config path: %s\n", path_file(model$config_path)))

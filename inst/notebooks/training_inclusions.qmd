@@ -57,6 +57,21 @@ model_id <- train_model(
   learning_rate = 1e-4,
   freeze_at = 1
 )
+
+model_id <- train_model(
+  dataset_id = 'inclusions',
+  model_id = 'inclusions_r101',
+  backbone = "resnet101",
+  ims_per_batch = 32,
+  num_workers = 32,
+  hpc_cpus_per_task = 36,
+  hpc_mem = "96gb",
+  eval_period = 200,
+  max_iter = 2000,
+  num_classes = 1,
+  learning_rate = 1e-4,
+  freeze_at = 1
+)
 ```
 
 ## Annotation Diagnostics
@@ -132,7 +147,7 @@ bind_rows(train_size_dist, val_size_dist) %>%
 
 ```{r evaluation}
 # Load training metrics
-eval_result <- evaluate_training(model_path)
+eval_result <- evaluate_training(model_id)
 ```
 
 ```{r plots}
@@ -158,6 +173,44 @@ eval_result$validation_data |>
     facet_wrap(~metric, scales = "free_y") +
     labs(title = "Validation Metrics - inclusions_v2") +
     theme_minimal()
+```
+
+```{r}
+cat("\n== Testing Model ==\n")
+
+# Load trained model from local board
+model <- from_pretrained(model_id)
+
+# Test on validation sample
+val_images <- dir_ls(here(data_dir, "valid"), glob = '*.jpg')
+
+test_image <- val_images[100]
+
+test_result <- predict_image(
+  use_slicing = TRUE,
+  slice_size = 1024,
+  image_path = test_image,
+  model = model,
+  output_dir = here('results/inclusions')
+)
+
+cat(sprintf("Test image: %s\n", path_file(test_image)))
+cat(sprintf("Objects detected: %d\n", nrow(test_result)))
+cat(sprintf("Mean confidence: %.3f\n", mean(test_result$confidence)))
+
+```
+
+```{r}
+pred_image <- test_image |>
+  path_file() |>
+  path_ext_remove() |>
+  paste0('_prediction.png')
+
+magick::image_read(test_image) |> plot()
+here('results/inclusions', pred_image) |>
+  magick::image_read() |>
+  plot()
+
 ```
 
 ## SAHI COCO Evaluation

@@ -780,7 +780,7 @@ hpc_download_results <- function(setup) {
     local_file <- fs::path(local_download_dir, file)
 
     tryCatch({
-      hipergator::hpg_download(setup$target, remote_file, local_file)
+      hipergator::hpg_download(setup$target, remote_file, local_file, quiet = TRUE)
     }, error = function(e) {
       # metadata.json, metrics.json and log.txt are optional
       if (!file %in% c("metadata.json", "metrics.json", "log.txt")) {
