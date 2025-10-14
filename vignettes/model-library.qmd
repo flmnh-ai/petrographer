@@ -5,7 +5,7 @@ format:
     toc: true
     code-fold: false
 execute:
-  eval: false
+  eval: true
 ---
 
 ```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
