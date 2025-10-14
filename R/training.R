@@ -203,7 +203,18 @@ prepare_training_config <- function(data_dir,
 
   # Check if hipergator has valid config to determine training mode
   hpg_cfg <- tryCatch(hipergator::hpg_config(), error = function(e) list(base_dir = NULL))
-  training_mode <- if (!is.null(hpg_cfg$base_dir)) "hpc" else "local"
+  training_mode <- if (!is.null(hpg_cfg$base_dir)) {
+    # Verify hipergator is installed for HPC mode
+    if (!requireNamespace("hipergator", quietly = TRUE)) {
+      cli::cli_abort(c(
+        "HPC training requires the {.pkg hipergator} package",
+        "i" = "Install with: {.code remotes::install_github('flmnh-ai/hipergator')}"
+      ))
+    }
+    "hpc"
+  } else {
+    "local"
+  }
 
   data_dir <- fs::path_abs(fs::path_norm(data_dir))
 

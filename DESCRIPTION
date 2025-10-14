@@ -22,7 +22,6 @@ Imports:
     dplyr,
     fs,
     glue,
-    hipergator,
     jsonlite,
     pins,
     processx,
@@ -33,6 +32,7 @@ Imports:
     tibble,
     base64enc,
 Suggests:
+    hipergator,
     here,
     magick,
     patchwork,
