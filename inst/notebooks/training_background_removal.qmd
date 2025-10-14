@@ -29,58 +29,21 @@ validate_dataset(here::here("data/processed/background_removal"))
 
 ```{r training}
 # Train model - HPC settings configured above
-model_path <- train_model(
+# Models are automatically pinned to .petrographer/ board
+model_id <- train_model(
   data_dir = here::here("data/processed/background_removal"),
-  output_name = "background_removal_v2",
+  model_id = "background_removal_v2",
   num_classes = 2
-  # Uses defaults: max_iter=2000, learning_rate=0.0025, device="cuda", eval_period=100
+  # Uses defaults: max_iter=12000, device="cuda", eval_period=1000
 )
 ```
 
 ## Evaluation
 
 ```{r evaluation}
-# Load training metrics
-eval_result <- evaluate_training(model_dir = model_path)
-summary_stats <- eval_result$summary
-```
-
-## Visualization
-
-```{r plots, fig.width=10, fig.height=6}
-if (nrow(eval_result$training_data) > 0) {
-  # Simple training curves
-  training_df <- eval_result$training_data
-  
-  # Loss plot
-  loss_plot <- training_df |>
-    select(iteration, contains("loss")) |>
-    pivot_longer(-iteration, names_to = "loss_type", values_to = "loss") |>
-    filter(!is.na(loss)) |>
-    ggplot(aes(iteration, loss, color = loss_type)) +
-    geom_line() +
-    facet_wrap(~loss_type, scales = "free_y") +
-    labs(title = "Training Loss - background_removal_v2") +
-    theme_minimal() +
-    theme(legend.position = "none")
-  
-  print(loss_plot)
-  
-  # Validation metrics if available
-  if ("validation_data" %in% names(eval_result) && nrow(eval_result$validation_data) > 0) {
-    val_plot <- eval_result$validation_data |>
-      pivot_longer(-iteration, names_to = "metric", values_to = "value") |>
-      filter(!is.na(value)) |>
-      ggplot(aes(iteration, value)) +
-      geom_line() +
-      geom_point(size = 0.5) +
-      facet_wrap(~metric, scales = "free_y") +
-      labs(title = "Validation Metrics - background_removal_v2") +
-      theme_minimal()
-    
-    print(val_plot)
-  }
-}
+# Training metrics are embedded in the pin metadata
+# Access via model_info() or pins::pin_meta()
+meta <- model_info(model_id, board = "local")
 ```
 
 ## Model Testing
@@ -88,12 +51,8 @@ if (nrow(eval_result$training_data) > 0) {
 ```{r testing}
 cat("\n== Testing Model ==\n")
 
-# Load trained model
-model <- load_model(
-  model_path = path(model_path, "model_final.pth"),
-  config_path = path(model_path, "config.yaml"),
-  device = "cuda"
-)
+# Load trained model from local board
+model <- from_pretrained(model_id, device = "cuda")
 
 # Test on validation sample
 val_images <- dir_ls(path(here::here("data/processed/background_removal"), "val"), 

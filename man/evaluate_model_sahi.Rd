@@ -18,7 +18,7 @@ evaluate_model_sahi(
 )
 }
 \arguments{
-\item{model}{A \code{PetrographyModel} from \code{\link[=load_model]{load_model()}}.}
+\item{model}{A \code{PetrographyModel} from \code{\link[=from_pretrained]{from_pretrained()}}.}
 
 \item{annotation_json}{Path to COCO annotation JSON (e.g. \verb{valid/_annotations.coco.json}).}
 

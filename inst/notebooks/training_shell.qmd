@@ -28,9 +28,9 @@ validate_dataset(here::here("data/processed/shell_mixed"))
 
 ```{r training}
 # Train model - HPC settings configured above
-model_path <- train_model(
+model_id <- train_model(
   data_dir = here::here("data/processed/shell_mixed"),
-  output_name = "shell_detector_v3",
+  model_id = "shell_detector_v3",
   num_classes = 5
   # Uses defaults: max_iter=2000, learning_rate=0.0025, device="cuda", eval_period=100
 )
@@ -88,9 +88,8 @@ if (nrow(eval_result$training_data) > 0) {
 cat("\n== Testing Model ==\n")
 
 # Load trained model
-model <- load_model(
-  model_path = path(model_path, "model_final.pth"),
-  config_path = path(model_path, "config.yaml"),
+model <- from_pretrained(
+  model_dir = model_path,
   device = "cuda"
 )
 

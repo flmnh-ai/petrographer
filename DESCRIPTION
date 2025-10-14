@@ -24,13 +24,15 @@ Imports:
     glue,
     hipergator,
     jsonlite,
+    pins,
     processx,
     purrr,
     readr,
     reticulate,
     stringr,
     tibble,
-Suggests: 
+    base64enc,
+Suggests:
     here,
     magick,
     patchwork,

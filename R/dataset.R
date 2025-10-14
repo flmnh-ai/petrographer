@@ -132,8 +132,14 @@ annotation_diagnostics <- function(annotation_json,
   images_list <- anno$images %||% list()
   images_tbl <- if (length(images_list) > 0) {
     tibble::tibble(
-      id = purrr::map_int(images_list, "id", .default = NA_integer_),
-      file_name = purrr::map_chr(images_list, "file_name", .default = NA_character_)
+      id = purrr::map_int(images_list, ~{
+        val <- .x$id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      file_name = purrr::map_chr(images_list, ~{
+        val <- .x$file_name
+        if (is.null(val)) NA_character_ else as.character(val)
+      })
     )
   } else {
     tibble::tibble(id = integer(), file_name = character())
@@ -142,9 +148,18 @@ annotation_diagnostics <- function(annotation_json,
   annotations_list <- anno$annotations %||% list()
   annotations_tbl <- if (length(annotations_list) > 0) {
     tibble::tibble(
-      id = purrr::map_int(annotations_list, "id", .default = NA_integer_),
-      image_id = purrr::map_int(annotations_list, "image_id", .default = NA_integer_),
-      category_id = purrr::map_int(annotations_list, "category_id", .default = NA_integer_),
+      id = purrr::map_int(annotations_list, ~{
+        val <- .x$id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      image_id = purrr::map_int(annotations_list, ~{
+        val <- .x$image_id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      category_id = purrr::map_int(annotations_list, ~{
+        val <- .x$category_id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
       area = purrr::map_dbl(annotations_list, function(a) {
         bbox <- a$bbox
         if (is.null(bbox) || length(bbox) < 4) return(NA_real_)
@@ -158,8 +173,14 @@ annotation_diagnostics <- function(annotation_json,
   categories_list <- anno$categories %||% list()
   categories_tbl <- if (length(categories_list) > 0) {
     tibble::tibble(
-      id = purrr::map_int(categories_list, "id", .default = NA_integer_),
-      name = purrr::map_chr(categories_list, "name", .default = NA_character_)
+      id = purrr::map_int(categories_list, ~{
+        val <- .x$id
+        if (is.null(val)) NA_integer_ else as.integer(val)
+      }),
+      name = purrr::map_chr(categories_list, ~{
+        val <- .x$name
+        if (is.null(val)) NA_character_ else as.character(val)
+      })
     )
   } else {
     tibble::tibble(id = integer(), name = character())
@@ -182,6 +203,13 @@ annotation_diagnostics <- function(annotation_json,
   } else {
     tibble::tibble(category_id = integer(), count = integer())
   }
+
+  category_summary_tbl <- categories_tbl |>
+    dplyr::left_join(category_counts_tbl, by = c("id" = "category_id")) |>
+    dplyr::mutate(
+      count = dplyr::coalesce(count, 0L)
+    ) |>
+    dplyr::arrange(dplyr::desc(count))
 
   annos_per_image_vec <- annos_per_image_tbl$annotation_count
   bbox_areas <- annotations_tbl$area
@@ -206,6 +234,11 @@ annotation_diagnostics <- function(annotation_json,
       "Annotations per image (max)" = max_annos,
       "Categories" = n_categories
     ))
+
+    if (nrow(category_summary_tbl) > 0) {
+      cli::cli_h3("Category Counts")
+      cli::cli_dl(stats::setNames(as.character(category_summary_tbl$count), category_summary_tbl$name))
+    }
 
     cli::cli_h3("Object Size Distribution")
     if (nrow(bbox_summary_tbl) > 0) {
@@ -262,7 +295,7 @@ annotation_diagnostics <- function(annotation_json,
     n_categories = n_categories,
     annos_per_image_tbl = annos_per_image_tbl,
     bbox_summary = bbox_summary_tbl,
-    category_counts_tbl = category_counts_tbl,
+    category_counts_tbl = category_summary_tbl,
     annotations = annotations_tbl,
     warnings = warnings,
     summary_stats = list(
@@ -279,39 +312,6 @@ annotation_diagnostics <- function(annotation_json,
   invisible(result)
 }
 
-
-
-#' Summarize a dataset directory
-#' @param data_dir Directory containing 'train' and 'valid'
-#' @return A tibble with counts for train and val
-#' @export
-summarize_dataset <- function(data_dir) {
-  data_dir <- fs::path_abs(fs::path_norm(data_dir))
-  dirs <- c("train", "valid")
-  out <- tibble::tibble(
-    split = dirs,
-    images = vapply(dirs, function(d) {
-      p <- fs::path(data_dir, d)
-      if (!fs::dir_exists(p)) return(0L)
-      length(fs::dir_ls(p, regexp = "(?i)\\.(jpg|jpeg|png)$"))
-    }, integer(1)),
-    annotations = vapply(dirs, function(d) {
-      fs::file_exists(fs::path(data_dir, d, "_annotations.coco.json"))
-    }, logical(1))
-  )
-
-  # Print summary
-  tot <- sum(out$images, na.rm = TRUE)
-  cli::cli_h2("Dataset Summary")
-  cli::cli_dl(c(
-    "Total images" = tot,
-    "Splits" = paste(out$split, collapse = ", ")
-  ))
-
-  # Show the tibble
-  print(out)
-  invisible(out)
-}
 
 
 #' Slice COCO dataset for varying image sizes
@@ -437,4 +437,118 @@ slice_dataset <- function(input_dir,
   validate_dataset(output_dir)
 
   invisible(output_dir)
+}
+
+
+# ============================================================================
+# Dataset Pinning Functions
+# ============================================================================
+
+#' Pin a dataset to a board
+#'
+#' Pins a COCO-format dataset directory to a pins board for versioning and reuse.
+#' The dataset is compressed as tar.gz before pinning.
+#'
+#' @param data_dir Path to dataset directory
+#' @param dataset_id Name for the pinned dataset
+#' @param board Pins board (NULL = local board at .petrographer/)
+#' @param metadata Optional metadata list
+#' @export
+pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
+  if (!fs::dir_exists(data_dir)) {
+    cli::cli_abort("Dataset directory not found: {.path {data_dir}}")
+  }
+
+  data_dir <- fs::path_abs(fs::path_norm(data_dir))
+
+  # Validate dataset structure FIRST
+  cli::cli_alert_info("Validating dataset structure...")
+  validate_dataset(data_dir, quiet = TRUE)
+
+  if (is.null(board)) {
+    board <- .get_dataset_board()
+  }
+
+  # Create tar.gz in temp directory
+  cli::cli_alert_info("Compressing dataset...")
+  temp_dir <- fs::path_temp(paste0("pin_dataset_", dataset_id))
+  fs::dir_create(temp_dir)
+  on.exit(fs::dir_delete(temp_dir), add = TRUE)
+
+  tar_file <- fs::path(temp_dir, paste0(dataset_id, ".tar.gz"))
+
+  # Use R's tar() with -C flag to tar only train/ and valid/ subdirectories
+  # Result: tar contains train/, valid/ at root (no parent directory)
+  tar_result <- tar(
+    tarfile = tar_file,
+    files = c("train", "valid"),
+    compression = "gzip",
+    tar = sprintf("tar -C %s", shQuote(data_dir))
+  )
+
+  if (tar_result != 0) {
+    cli::cli_abort("Failed to create tar.gz archive")
+  }
+
+  metadata$pinned <- Sys.time()
+  metadata$compressed <- TRUE
+  metadata$original_path <- as.character(data_dir)
+
+  # Pin the tar.gz file
+  cli::cli_alert_info("Pinning to board...")
+  pins::pin_upload(board, tar_file, name = dataset_id, metadata = metadata)
+
+  cli::cli_alert_success("Pinned dataset {.strong {dataset_id}} ({fs::file_size(tar_file) |> fs_bytes() |> format()})")
+  invisible(dataset_id)
+}
+
+#' List pinned datasets
+#'
+#' Lists all pinned datasets on a board.
+#'
+#' @param board Pins board (NULL = local board, "local" = local board)
+#' @export
+list_datasets <- function(board = "local") {
+  if (identical(board, "local") || is.null(board)) {
+    board <- .get_dataset_board()
+  }
+
+  # Get all pins
+  all_pins <- pins::pin_list(board)
+
+  # Filter for dataset pins (could use naming convention if needed)
+  # For now, return all pins - user can inspect with pin_meta()
+  all_pins
+}
+
+#' Get path to pinned dataset
+#'
+#' Returns filesystem path to a pinned dataset tar.gz file.
+#' The tar.gz should be extracted at training time.
+#'
+#' @param dataset_id Dataset name
+#' @param board Pins board (or board object)
+#' @param version Specific version to retrieve (NULL = latest)
+#' @return Path to dataset tar.gz file
+#' @export
+get_dataset_path <- function(dataset_id, board = "local", version = NULL) {
+  if (identical(board, "local") || is.null(board)) {
+    board <- .get_dataset_board()
+  }
+
+  # Get pin paths (returns vector of file paths)
+  paths <- pins::pin_download(board, dataset_id, version = version)
+
+  # Find the tar.gz file
+  tar_files <- paths[grepl("\\.tar\\.gz$", paths)]
+
+  if (length(tar_files) == 0) {
+    cli::cli_abort("No tar.gz file found in pinned dataset {.val {dataset_id}}")
+  }
+
+  if (length(tar_files) > 1) {
+    cli::cli_warn("Multiple tar.gz files found, using first: {.path {tar_files[1]}}")
+  }
+
+  as.character(tar_files[1])
 }

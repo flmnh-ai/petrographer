@@ -10,18 +10,11 @@ Training **inclusions detection** model for petrographic analysis with extended 
 ```{r setup, message=FALSE}
 library(tidyverse)
 library(magick)
+library(jsonlite)
 library(fs)
 library(here)
 library(hipergator)
 library(petrographer)
-library(hipergator)
-
-# Configure HPC settings once
-hpg_configure(
-  host = "hpg",
-  user = Sys.getenv("USER"),
-  base_dir = "/blue/nicolas.gauthier/petrographer"
-)
 
 # Configure HPC settings once
 hpg_configure(
@@ -30,27 +23,54 @@ hpg_configure(
 )
 
 data_dir <- here("data/processed/inclusions_sliced")
+```
 
+```{r}
 # Validate dataset
 validate_dataset(data_dir)
+
+ pin_dataset(
+    data_dir = data_dir,
+    dataset_id = "inclusions",
+    metadata = list(
+      description = "Sliced inclusions only",
+      created_by = "nick-gauthier",
+      num_images = 544
+    )
+  )
 ```
+
 
 ## Training
 
 ```{r training}
 # Train model - HPC settings configured above
-model_path <- train_model(
-  data_dir = data_dir,
-  output_name = "inclusions",
+model_id <- train_model(
+  dataset_id = 'inclusions',
   ims_per_batch = 16,
-  num_workers = 16,
-  hpc_cpus_per_task = 18,
+  num_workers = 32,
+  hpc_cpus_per_task = 32,
   hpc_mem = "96gb",
   eval_period = 200,
   max_iter = 2000,
   num_classes = 1,
-  freeze_at = 2,
-  learning_rate = 1e-3
+  learning_rate = 1e-4,
+  freeze_at = 1
+)
+
+model_id <- train_model(
+  dataset_id = 'inclusions',
+  model_id = 'inclusions_r101',
+  backbone = "resnet101",
+  ims_per_batch = 32,
+  num_workers = 32,
+  hpc_cpus_per_task = 36,
+  hpc_mem = "96gb",
+  eval_period = 200,
+  max_iter = 2000,
+  num_classes = 1,
+  learning_rate = 1e-4,
+  freeze_at = 1
 )
 ```
 
@@ -74,12 +94,12 @@ val_diag <- diagnose_annotations(
 library(ggplot2)
 
 train_anno_dist <- tibble(
-  count = train_diag$annos_per_image,
+  count = train_diag$annos_per_image_tbl$annotation_count,
   split = "train"
 )
 
 val_anno_dist <- tibble(
-  count = val_diag$annos_per_image,
+  count = val_diag$annos_per_image_tbl$annotation_count,
   split = "valid"
 )
 
@@ -101,12 +121,12 @@ bind_rows(train_anno_dist, val_anno_dist) %>%
 
 # Object size distribution
 train_size_dist <- tibble(
-  area = train_diag$bbox_areas,
+  area = train_diag$annotations$area,
   split = "train"
 )
 
 val_size_dist <- tibble(
-  area = val_diag$bbox_areas,
+  area = val_diag$annotations$area,
   split = "valid"
 )
 
@@ -127,7 +147,7 @@ bind_rows(train_size_dist, val_size_dist) %>%
 
 ```{r evaluation}
 # Load training metrics
-eval_result <- evaluate_training(model_path)
+eval_result <- evaluate_training(model_id)
 ```
 
 ```{r plots}
@@ -155,13 +175,51 @@ eval_result$validation_data |>
     theme_minimal()
 ```
 
+```{r}
+cat("\n== Testing Model ==\n")
+
+# Load trained model from local board
+model <- from_pretrained(model_id)
+
+# Test on validation sample
+val_images <- dir_ls(here(data_dir, "valid"), glob = '*.jpg')
+
+test_image <- val_images[100]
+
+test_result <- predict_image(
+  use_slicing = TRUE,
+  slice_size = 1024,
+  image_path = test_image,
+  model = model,
+  output_dir = here('results/inclusions')
+)
+
+cat(sprintf("Test image: %s\n", path_file(test_image)))
+cat(sprintf("Objects detected: %d\n", nrow(test_result)))
+cat(sprintf("Mean confidence: %.3f\n", mean(test_result$confidence)))
+
+```
+
+```{r}
+pred_image <- test_image |>
+  path_file() |>
+  path_ext_remove() |>
+  paste0('_prediction.png')
+
+magick::image_read(test_image) |> plot()
+here('results/inclusions', pred_image) |>
+  magick::image_read() |>
+  plot()
+
+```
+
 ## SAHI COCO Evaluation
 
 Evaluate the model on the validation set using SAHI inference and compute COCO metrics.
 
 ```{r sahi-eval}
 # Load trained model
-model <- load_model(
+model <- from_pretrained(
   model_path = path(model_path, "model_final.pth"),
   config_path = path(model_path, "config.yaml")
 )
@@ -302,40 +360,24 @@ cat(sprintf("Mean confidence: %.3f\n", mean(test_result$confidence)))
 ```
 
 
-```{r}
-library(magick)
+```{r ground-truth-plot}
+
 pred_image <- test_image |>
   path_file() |>
   path_ext_remove() |>
   paste0('_prediction.png')
 
-image_read(test_image) |> plot()
+magick::image_read(test_image) |> plot()
 here('results/inclusions_v3_test', pred_image) |>
-  image_read() |>
+  magick::image_read() |>
   plot()
-```
-```{r}
-test_image <- here('data/lyons_annotations/img') |>
-dir_ls()
 
-test_result <- predict_image(
-  image_path = test_image[[6]],
-  model = model,
-  slice_size = 1024,
-  output_dir = here('results/inclusions_v3_test')
+pg_plot_annotations(
+  image_path = test_image,
+  annotation_json = fs::path(data_dir, "valid", "_annotations.coco.json"),
+  label_cex = 0.6
 )
-
-pred_image <- test_image[[6]] |>
-  path_file() |>
-  path_ext_remove() |>
-  paste0('_prediction.png')
-'../notebooks/results/
-here('results/inclusions_v3_test/) |>
-  image_read() |>
-  plot()
 ```
-
-I need to slice the trianing data!
 ## Summary
 
 ```{r summary}

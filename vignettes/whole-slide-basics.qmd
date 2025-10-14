@@ -1,0 +1,100 @@
+---
+title: "Whole-Slide Prediction Basics"
+format:
+  html:
+    toc: true
+execute:
+  warning: false
+  message: false
+---
+
+This vignette walks through a complete whole-slide inference workflow using `petrographer`. It mirrors the experience of a user who has a scanned thin section, wants to run the pretrained detector with SAHI slicing, and then review both the visual overlays and quantitative statistics.
+
+## Load the Toolkit
+
+The package ships with all high-level helpers. Load it alongside a few tidy utilities you may want for inspection.
+
+```{r setup}
+library(petrographer)
+library(dplyr)
+library(fs)
+```
+
+## Point to Your Whole-Slide Image
+
+Set the path to the slide you want to analyse. Replace the placeholder with your `.svs`, `.tif`, or other supported image file.
+
+```{r whole-slide-path, eval=FALSE}
+wsi_path <- system.file("extdata", "test_image.jpg", package = "petrographer")
+file_exists(wsi_path)
+```
+
+Swap in your `.svs`, `.tif`, or other supported whole-slide file once you are ready to run the full workflow.
+
+## Cache a Pretrained Model
+
+Pretrained weights are hosted on the petrographer hub. Install (or refresh) the pin you need, then instantiate the R-side wrapper. Replace `model_id` with whichever detector matches your slide.
+
+```{r load-model, eval=FALSE}
+model <- from_pretrained('inclusions_shell')
+model
+```
+
+`pg_install_pretrained()` downloads the pin once and reuses the cache next time. The returned `PetrographyModel` retains the manifest so you can inspect provenance or training metadata as needed.
+
+## Run SAHI Inference with Custom Strides
+
+Whole-slide images are large, so enabling SAHI slicing keeps detections accurate while fitting within GPU or CPU memory. Control the stride through `slice_size` and `overlap`.
+
+```{r predict-slide, eval=FALSE}
+output_dir <- path("results", path_file(path_ext_remove(wsi_path)))
+
+predictions <- predict_image(
+  image_path = wsi_path,
+  model = model,
+  use_slicing = FALSE,
+  slice_size = 1024,  # pixels per tile; shrink for tighter memory budgets
+  overlap = 0.2,     # tile overlap to smooth boundaries
+  output_dir = output_dir,
+  save_visualizations = TRUE
+)
+
+predictions
+```
+
+The tibble contains one row per detected grain, complete with geometric measurements and morphology descriptors ready for downstream analysis.
+
+## Visualise the Overlay and Exports
+
+SAHI writes annotated overlays alongside the raw detections. Locate the generated assets and preview them in-line.
+
+```{r visualise-results, eval=FALSE}
+dir_ls(output_dir)
+
+viz_path <- dir_ls(output_dir, glob = "*_prediction.png", fail = FALSE)
+if (length(viz_path)) {
+  image_read(viz_path[[1]])
+}
+```
+
+You can also hand the exported visual to image viewers or documentation pipelines — each file is saved with the original slide name plus `_prediction.png`.
+
+## Summarise Detection Statistics
+
+With the predictions tibble in hand, compute per-image summaries or overall population metrics to quantify mineralogy at scale.
+
+```{r summarise-stats, eval=FALSE}
+per_image <- summarize_by_image(predictions)
+per_image
+
+population <- get_population_stats(predictions)
+population
+```
+
+These summaries surface object counts, size distributions, and shape metrics that support QA checks or comparisons between slides.
+
+## Next Steps
+
+- Adjust `slice_size` and `overlap` to balance runtime and fidelity for extremely large slides.
+- Pipe `predictions` into custom tidyverse workflows for further filtering, plotting, or reporting.
+- Use `predict_images()` to batch-process entire slide directories once you are satisfied with the single-slide results.

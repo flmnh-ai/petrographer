@@ -1,0 +1,107 @@
+---
+title: "Loading Petrographer Models from Pins"
+author: "petrographer team"
+format:
+  html:
+    code-fold: true
+    toc: true
+editor: visual
+---
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+library(petrographer)
+if (requireNamespace("pins", quietly = TRUE)) {
+  library(pins)
+}
+```
+
+## Pins-First Architecture
+
+`train_model()` now automatically pins models to `.petrographer/` with all metadata:
+
+- Model id and version (timestamp-based run id)
+- Training artifacts (`model_best.pth`, `config.yaml`, `metrics.json`)
+- Training metadata (backbone, freeze depth, batch size, learning rate, etc.)
+- Dataset information
+
+Models are versioned automatically via pins. `from_pretrained()` downloads models from the public hub or loads from local pins, caching downloads automatically.
+
+This notebook walks through the workflow.
+
+## Configure a Pins Board
+
+For publishing, we use a writable board rooted in a local folder (e.g. a Dropbox directory that you share read-only on the web). `board_user()` creates it if needed.
+
+```{r}
+board <- board_user()
+board
+```
+
+To serve pretrained models to users, publish the contents of this folder to a shared location (the official petrographer hub uses a Dropbox folder). Consumers can then call `from_pretrained()` with no additional configuration; the package points at the public hub by default.
+
+## Publish an Existing Model Directory
+
+Assume you have a trained model in `Detectron2_Models/<name>`. The training pipeline now writes `manifest.json` automatically, but `publish_model()` will regenerate it if needed.
+
+```{r}
+example_dir <- "Detectron2_Models/inclusions_v2"
+
+if (dir.exists(example_dir)) {
+  publish_result <- publish_model(
+    model_dir = example_dir,
+    model_id  = "petrography/inclusions_v2",
+    board     = board,
+    metadata  = list(notes = "Demo publish from notebook")
+  )
+  publish_result$manifest[c("model_id", "version", "metadata")]
+} else {
+  cli::cli_alert_warning("Example directory not found. Run train_model() first or adjust example_dir.")
+}
+```
+
+After publishing, `publish_model()` writes the model bundle to the pins board.
+
+## Inspect Manifest Without Downloading
+
+`model_info()` reads the manifest from pin metadata when available and, if needed, downloads the pin once to access the manifest on disk.
+
+```{r}
+if (exists("publish_result")) {
+  manifest_preview <- model_info("petrography/inclusions_v2", board = board)
+  str(manifest_preview[c("model_id", "version", "metadata")], max.level = 1)
+}
+```
+
+## Load a Model From Pretrained
+
+`from_pretrained()` downloads (or reuses cached) weights from the hosted hub and returns a ready-to-use `PetrographyModel` object.
+
+```{r}
+if (exists("publish_result")) {
+  model <- from_pretrained("petrography/inclusions_v2", device = "cpu")
+
+  # Access model properties
+  model$model_path
+  model$config_path
+  model$manifest$metadata[c("backbone", "freeze_at", "ims_per_batch")]
+}
+```
+
+The object keeps a reference to the manifest, so you can log or audit the run configuration later.
+
+## Reusing the Local Cache
+
+Subsequent calls to `from_pretrained()` reuse the cached files that `pins::pin_download()` stores on disk. To force a refresh, call `pins::pin_delete()` for the model pin and reload.
+
+## Next Steps
+
+- Models are automatically pinned after each training run to `.petrographer/`
+- Use `list_trained_models()` or `list_models(board = "local")` to see your local models
+- Load any model with `from_pretrained("model_id")` - it checks local first, then hub
+- Force local-only with `from_pretrained("model_id", board = "local")`
+- Maintainers can publish models to the hub using `pin_model()` and `pins::write_board_manifest()`
+
+This completes the tour of the pins-first workflow.

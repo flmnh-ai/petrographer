@@ -43,95 +43,24 @@ suggest_lr <- function(batch_size, freeze_at = 2) {
   )
 }
 
-#' Resolve auto-versioned output name
-#' @param base_name Base model name (e.g., "inclusions")
-#' @param output_dir Directory where models are stored
-#' @param remote_base_dir Optional remote HPC base directory to check for existing versions
-#' @param ssh_target Optional SSH target (from hpg_authenticate) for remote checks
-#' @return Versioned name (e.g., "inclusions_v2" if "inclusions" exists)
-#' @keywords internal
-resolve_version <- function(base_name, output_dir, remote_base_dir = NULL, ssh_target = NULL) {
-
-  # Collect versions from local directory
-  local_versions <- integer(0)
-
-  if (fs::dir_exists(output_dir)) {
-    all_dirs <- fs::dir_ls(output_dir, type = "directory", fail = FALSE)
-    pattern <- paste0("^", base_name, "(_v(\\d+))?$")
-
-    existing <- all_dirs %>%
-      fs::path_file() %>%
-      .[grepl(pattern, .)]
-
-    local_versions <- vapply(existing, function(name) {
-      if (name == base_name) return(1L)
-      m <- regexec("_v(\\d+)$", name)
-      matches <- regmatches(name, m)[[1]]
-      if (length(matches) < 2) return(1L)
-      as.integer(matches[2])
-    }, integer(1))
-  }
-
-  # Collect versions from remote directory (HPC)
-  remote_versions <- integer(0)
-
-  if (!is.null(remote_base_dir) && !is.null(ssh_target)) {
-    tryCatch({
-      # List remote directories matching pattern
-      pattern_glob <- paste0(base_name, "*")
-      list_cmd <- sprintf("ls -d %s/%s 2>/dev/null || true",
-                         shQuote(remote_base_dir),
-                         shQuote(pattern_glob))
-
-      result <- processx::run(
-        "ssh", c(ssh_target, list_cmd),
-        timeout = 10, error_on_status = FALSE
-      )
-
-      if (result$status == 0 && nzchar(result$stdout)) {
-        remote_dirs <- strsplit(trimws(result$stdout), "\n")[[1]]
-        remote_names <- basename(remote_dirs)
-        pattern <- paste0("^", base_name, "(_v(\\d+))?$")
-        matching <- remote_names[grepl(pattern, remote_names)]
-
-        remote_versions <- vapply(matching, function(name) {
-          if (name == base_name) return(1L)
-          m <- regexec("_v(\\d+)$", name)
-          matches <- regmatches(name, m)[[1]]
-          if (length(matches) < 2) return(1L)
-          as.integer(matches[2])
-        }, integer(1))
-      }
-    }, error = function(e) {
-      # Silently ignore remote check errors (SSH might not be available)
-    })
-  }
-
-  # Combine local and remote versions
-  all_versions <- c(local_versions, remote_versions)
-  next_version <- if (length(all_versions) == 0) 1L else max(all_versions) + 1L
-
-  if (next_version == 1L) {
-    base_name  # First run
-  } else {
-    paste0(base_name, "_v", next_version)
-  }
-}
-
 #' Train a new petrography detection model
 #'
 #' Orchestrates local or HPC training using Detectron2. R computes batch size,
 #' workers, and a batch-scaled learning rate, then calls the Python trainer.
-#' Optionally publishes the resulting model to a pins board.
+#' Models are automatically pinned to the local board (.petrographer/) for versioning.
 #'
-#' @param data_dir Directory containing `train/` and `valid/` subdirectories with COCO annotations.
-#' @param output_name Name for the trained model (used for artifact directories and pin names).
-#'   If `auto_version=TRUE` (default) and this name already exists, automatically appends `_v2`, `_v3`, etc.
+#' Training mode (local vs HPC) is auto-detected based on `hipergator` configuration.
+#' For HPC training, call `hipergator::hpg_configure()` before `train_model()` to set
+#' connection details (host, user, base_dir).
+#'
+#' @param dataset_id Name of pinned dataset to use for training (preferred).
+#' @param data_dir Path to dataset directory (alternative to dataset_id; will be auto-pinned with temp ID).
+#' @param model_id Name for the trained model (used for pins). Defaults to `dataset_id` if not provided.
 #' @param num_classes Number of object classes in your dataset.
 #' @param backbone Model backbone: "resnet50" (default), "resnet101", "resnext101", or a full Detectron2 model zoo key.
-#' @param freeze_at Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem; default), 2 (freeze stem + res2).
+#' @param freeze_at Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem), 2 (freeze stem + res2; default).
 #'   Lower values train more layers = slower but better domain adaptation.
-#' @param max_iter Maximum training iterations. Default: 12000.
+#' @param max_iter Maximum training iterations. Default: 2000.
 #' @param learning_rate Learning rate for the detection head. If NULL (default), uses smart
 #'   auto-scaling based on `freeze_at` and batch size. Backbone automatically gets 0.1x this rate.
 #'   If a number is provided, uses that exact value for the head (backbone still gets 0.1x).
@@ -140,48 +69,76 @@ resolve_version <- function(base_name, output_dir, remote_base_dir = NULL, ssh_t
 #' @param checkpoint_period Checkpoint saving frequency (0 = final only; > 0 = every N iters).
 #' @param ims_per_batch Total images per iteration across all GPUs. If NA (default), uses 2 images per GPU.
 #' @param num_workers DataLoader workers per process (Detectron2). If NULL (default), set to images per GPU.
-#' @param hpc_env Character vector of SLURM script preamble lines (e.g., module loads). If NULL, none added.
-#' @param hpc_cpus_per_task Optional SLURM cpus-per-task hint.
-#' @param hpc_mem Optional SLURM memory hint.
+#' @param hpc_cpus_per_task Optional SLURM cpus-per-task hint for HPC training.
+#' @param hpc_mem Optional SLURM memory hint for HPC training (e.g., "24gb", "96gb").
 #' @param gpus Number of GPUs for HPC training (default: 1; ignored for local).
-#' @param hpc_host SSH hostname for HPC training (default: `PETROGRAPHER_HPC_HOST`; empty for local).
-#' @param hpc_user Username for HPC (default: NULL).
-#' @param hpc_base_dir Remote base directory on HPC (default: `PETROGRAPHER_HPC_BASE_DIR`).
-#' @param local_output_dir Local directory to save trained model (default: `Detectron2_Models`).
-#' @param auto_version Auto-increment version suffix if output_name exists (default: TRUE).
-#' @param publish_after_train Whether to publish (pin) the trained model to a board.
-#' @param model_board pins board for model storage (if NULL and `publish_after_train=TRUE`, uses [pg_board()]).
-#' @param model_description Optional description to include with the published model.
-#' @return Path to the trained model directory.
+#' @return Model ID (can be loaded with `from_pretrained(model_id)`).
 #' @export
-train_model <- function(data_dir,
-                        output_name,
+train_model <- function(dataset_id = NULL,
+                        data_dir = NULL,
+                        model_id = NULL,
                         num_classes,
                         backbone = "resnet50",
                         freeze_at = 2,
-                        max_iter = 12000,
+                        max_iter = 2000,
                         learning_rate = NULL,
                         device = "cuda",
                         eval_period = 1000,
                         checkpoint_period = 0,
                         ims_per_batch = NA,
                         num_workers = NULL,
-                        hpc_env = NULL,
                         hpc_cpus_per_task = NULL,
                         hpc_mem = NULL,
-                        gpus = 1,
-                        hpc_host = Sys.getenv("PETROGRAPHER_HPC_HOST", ""),
-                        hpc_user = NULL,
-                        hpc_base_dir = Sys.getenv("PETROGRAPHER_HPC_BASE_DIR", ""),
-                        local_output_dir = here::here("Detectron2_Models"),
-                        auto_version = TRUE,
-                        publish_after_train = FALSE,
-                        model_board = NULL,
-                        model_description = NULL) {
+                        gpus = 1) {
+
+  # Resolve dataset (must provide one or the other)
+  if (!is.null(dataset_id) && !is.null(data_dir)) {
+    cli::cli_abort("Provide either {.arg dataset_id} or {.arg data_dir}, not both")
+  }
+  if (is.null(dataset_id) && is.null(data_dir)) {
+    cli::cli_abort("Must provide either {.arg dataset_id} or {.arg data_dir}")
+  }
+
+  # Default model_id to dataset_id if not provided
+  if (is.null(model_id)) {
+    if (!is.null(dataset_id)) {
+      model_id <- dataset_id
+      cli::cli_alert_info("Using model_id = {.val {model_id}} (same as dataset_id)")
+    } else {
+      cli::cli_abort("Must provide {.arg model_id} when using {.arg data_dir}")
+    }
+  }
+
+  resolved_dataset <- if (!is.null(dataset_id)) {
+    # Use pinned dataset from persistent board
+    list(
+      id = dataset_id,
+      path = get_dataset_path(dataset_id, board = "local"),
+      board = .get_dataset_board(),
+      is_temp = FALSE
+    )
+  } else {
+    # Auto-pin to local board (persistent, reproducible)
+    temp_id <- paste0("_temp_", format(Sys.time(), "%Y%m%d_%H%M%S"))
+    cli::cli_alert_info("Auto-pinning dataset as {.val {temp_id}} (will persist in .petrographer/datasets/)")
+    pin_dataset(data_dir, temp_id, board = .get_dataset_board())
+    list(
+      id = temp_id,
+      path = get_dataset_path(temp_id, board = "local"),
+      board = .get_dataset_board(),
+      is_temp = FALSE
+    )
+  }
+
+  # Capture dataset version for reproducibility
+  dataset_meta <- pins::pin_meta(resolved_dataset$board, resolved_dataset$id)
+  resolved_dataset$version <- dataset_meta$version
 
   config <- prepare_training_config(
-    data_dir = data_dir,
-    output_name = output_name,
+    data_dir = resolved_dataset$path,
+    dataset_id = resolved_dataset$id,
+    dataset_version = resolved_dataset$version,
+    model_id = model_id,
     num_classes = num_classes,
     backbone = backbone,
     freeze_at = freeze_at,
@@ -192,18 +149,9 @@ train_model <- function(data_dir,
     checkpoint_period = checkpoint_period,
     ims_per_batch = ims_per_batch,
     num_workers = num_workers,
-    hpc_env = hpc_env,
     hpc_cpus_per_task = hpc_cpus_per_task,
     hpc_mem = hpc_mem,
-    gpus = gpus,
-    hpc_host = hpc_host,
-    hpc_user = hpc_user,
-    hpc_base_dir = hpc_base_dir,
-    local_output_dir = local_output_dir,
-    auto_version = auto_version,
-    publish_after_train = publish_after_train,
-    model_board = model_board,
-    model_description = model_description
+    gpus = gpus
   )
 
   cli::cli_h1("Model Training")
@@ -214,24 +162,21 @@ train_model <- function(data_dir,
 
 
   start_time <- Sys.time()
-  result <- if (identical(config$mode, "local")) {
+  model_dir <- if (identical(config$mode, "local")) {
     run_local_training(config)
   } else {
     run_hpc_training(config)
   }
   duration_mins <- round(as.numeric(difftime(Sys.time(), start_time, units = "mins")), 1)
   cli::cli_alert_success("Training completed in {duration_mins} minute{?s}.")
-  cli::cli_alert_info("Model saved to: {.path {result}}")
 
-  if (config$publish_after_train) {
-    publish_trained_model(
-      model_dir = result,
-      config = config,
-      duration_mins = duration_mins
-    )
-  }
+  model_id <- finalize_trained_model(
+    model_dir = model_dir,
+    config = config,
+    duration_mins = duration_mins
+  )
 
-  return(result)
+  return(model_id)
 }
 
 
@@ -239,7 +184,9 @@ train_model <- function(data_dir,
 #' @keywords internal
 
 prepare_training_config <- function(data_dir,
-                                    output_name,
+                                    dataset_id,
+                                    dataset_version,
+                                    model_id,
                                     num_classes,
                                     backbone,
                                     freeze_at,
@@ -250,28 +197,23 @@ prepare_training_config <- function(data_dir,
                                     checkpoint_period,
                                     ims_per_batch,
                                     num_workers,
-                                    hpc_env,
                                     hpc_cpus_per_task,
                                     hpc_mem,
-                                    gpus,
-                                    hpc_host,
-                                    hpc_user,
-                                    hpc_base_dir,
-                                    local_output_dir,
-                                    auto_version,
-                                    publish_after_train,
-                                    model_board,
-                                    model_description) {
+                                    gpus) {
 
-  training_mode <- if (is.null(hpc_host) || hpc_host == "") "local" else "hpc"
+  # Check if hipergator has valid config to determine training mode
+  hpg_cfg <- tryCatch(hipergator::hpg_config(), error = function(e) list(base_dir = NULL))
+  training_mode <- if (!is.null(hpg_cfg$base_dir)) "hpc" else "local"
 
   data_dir <- fs::path_abs(fs::path_norm(data_dir))
-  local_output_dir <- fs::path_abs(fs::path_norm(local_output_dir))
 
-  validate_dataset(data_dir, quiet = TRUE)
+  run_id <- format(Sys.time(), "%Y%m%d%H%M%S")
 
-  if (!grepl("^[A-Za-z0-9._-]{1,64}$", output_name)) {
-    cli::cli_abort("Invalid output_name. Use only letters, numbers, ., _, - (max 64 chars).")
+  # Skip reading class names from tar.gz (metadata only, not critical for training)
+  class_names <- character()
+
+  if (!grepl("^[A-Za-z0-9._-]{1,64}$", model_id)) {
+    cli::cli_abort("Invalid model_id. Use only letters, numbers, ., _, - (max 64 chars).")
   }
 
   effective_ims <- resolve_batch_size(ims_per_batch, gpus)
@@ -282,20 +224,15 @@ prepare_training_config <- function(data_dir,
   lr_info <- resolve_learning_rate(learning_rate, effective_ims, freeze_at)
   worker_count <- resolve_worker_count(num_workers, effective_ims, gpus)
 
-  fs::dir_create(local_output_dir)
-
-  resolved <- resolve_training_output(
-    output_name = output_name,
-    auto_version = auto_version,
-    local_output_dir = local_output_dir,
-    training_mode = training_mode
-  )
+  # Create temp workspace for training
+  workspace_dir <- fs::path_temp(paste0("training_", model_id, "_", run_id))
+  fs::dir_create(workspace_dir)
 
   display <- build_training_display(
-    output_name = resolved$output_name,
+    model_id = model_id,
     training_mode = training_mode,
     data_dir = data_dir,
-    local_output_dir = local_output_dir,
+    workspace_dir = workspace_dir,
     backbone = backbone,
     freeze_at = freeze_at,
     device = device,
@@ -304,8 +241,6 @@ prepare_training_config <- function(data_dir,
     eval_period = eval_period,
     checkpoint_period = checkpoint_period,
     ims_per_batch = effective_ims,
-    hpc_host = hpc_host,
-    hpc_user = hpc_user,
     gpus = gpus
   )
 
@@ -313,7 +248,10 @@ prepare_training_config <- function(data_dir,
     mode = training_mode,
     display = display,
     data_dir = data_dir,
-    output_name = resolved$output_name,
+    dataset_id = dataset_id,
+    dataset_version = dataset_version,
+    model_id = model_id,
+    workspace_dir = workspace_dir,
     max_iter = max_iter,
     learning_rate = lr_info$lr,
     num_classes = num_classes,
@@ -324,19 +262,12 @@ prepare_training_config <- function(data_dir,
     ims_per_batch = effective_ims,
     num_workers = worker_count,
     device = device,
-    hpc_env = hpc_env,
     hpc_cpus_per_task = hpc_cpus_per_task,
     hpc_mem = hpc_mem,
     gpus = gpus,
-    hpc_host = hpc_host,
-    hpc_user = hpc_user,
-    hpc_base_dir = hpc_base_dir,
-    local_output_dir = local_output_dir,
-    auto_version = auto_version,
-    publish_after_train = publish_after_train,
-    model_board = model_board,
-    model_description = model_description,
-    lr_method = lr_info$method
+    lr_method = lr_info$method,
+    class_names = class_names,
+    run_id = run_id
   )
 }
 
@@ -374,21 +305,10 @@ resolve_worker_count <- function(num_workers, ims_per_batch, gpus) {
   as.integer(num_workers)
 }
 
-resolve_training_output <- function(output_name, auto_version, local_output_dir, training_mode) {
-  if (isTRUE(auto_version) && identical(training_mode, "local")) {
-    versioned_name <- resolve_version(output_name, local_output_dir)
-    if (versioned_name != output_name) {
-      cli::cli_alert_info("Auto-versioning enabled: {.val {output_name}} -> {.val {versioned_name}}")
-      output_name <- versioned_name
-    }
-  }
-  list(output_name = output_name)
-}
-
-build_training_display <- function(output_name,
+build_training_display <- function(model_id,
                                    training_mode,
                                    data_dir,
-                                   local_output_dir,
+                                   workspace_dir,
                                    backbone,
                                    freeze_at,
                                    device,
@@ -397,12 +317,10 @@ build_training_display <- function(output_name,
                                    eval_period,
                                    checkpoint_period,
                                    ims_per_batch,
-                                   hpc_host,
-                                   hpc_user,
                                    gpus) {
 
   core <- list(
-    "Model" = output_name,
+    "Model" = model_id,
     "Data" = as.character(data_dir),
     "Backbone" = backbone,
     "Freeze at" = freeze_at,
@@ -416,16 +334,18 @@ build_training_display <- function(output_name,
     "Eval period" = eval_period
   )
   if (checkpoint_period > 0) extras[["Checkpoint"]] <- checkpoint_period
-  extras[["Output"]] <- as.character(local_output_dir)
+  extras[["Workspace"]] <- as.character(workspace_dir)
 
   mode_details <- NULL
   if (training_mode == "hpc") {
+    # Get HPC config from hipergator
+    hpg_cfg <- hipergator::hpg_config()
     mode_details <- list(
-      "HPC host" = hpc_host,
+      "HPC host" = hpg_cfg$host,
       "GPUs" = gpus
     )
-    if (!is.null(hpc_user) && nzchar(hpc_user)) {
-      mode_details[["User"]] <- hpc_user
+    if (!is.null(hpg_cfg$user) && nzchar(hpg_cfg$user)) {
+      mode_details[["User"]] <- hpg_cfg$user
     }
   }
 
@@ -433,46 +353,117 @@ build_training_display <- function(output_name,
 }
 
 
-publish_trained_model <- function(model_dir, config, duration_mins) {
-  cli::cli_h2("Model Publishing")
-
-  training_metadata <- list(
+finalize_trained_model <- function(model_dir, config, duration_mins) {
+  # Build metadata
+  metadata <- list(
+    dataset_id             = config$dataset_id,
+    dataset_version        = config$dataset_version,
     data_dir               = as.character(config$data_dir),
     num_classes            = config$num_classes,
+    class_names            = config$class_names,
     backbone               = config$backbone,
     freeze_at              = config$freeze_at,
     max_iter               = config$max_iter,
     learning_rate          = config$learning_rate,
     lr_method              = config$lr_method,
     ims_per_batch          = config$ims_per_batch,
+    num_workers            = config$num_workers,
     device                 = config$device,
+    eval_period            = config$eval_period,
+    checkpoint_period      = config$checkpoint_period,
     training_duration_mins = duration_mins,
-    training_mode          = if (identical(config$mode, "local")) "Local" else paste0("HPC (", config$hpc_host, ")")
+    run_id                 = config$run_id,
+    version                = config$run_id,
+    created                = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")
   )
-  if (!is.null(config$hpc_host) && config$hpc_host != "") {
-    training_metadata$hpc_host <- config$hpc_host
-    training_metadata$gpus <- config$gpus
+
+  # Add HPC metadata if HPC mode
+  if (identical(config$mode, "hpc")) {
+    hpg_cfg <- hipergator::hpg_config()
+    metadata$training_mode <- paste0("HPC (", hpg_cfg$host, ")")
+    metadata$hpc_host <- hpg_cfg$host
+    metadata$gpus <- config$gpus
+  } else {
+    metadata$training_mode <- "Local"
   }
 
+  # Add metrics if available
+  metrics_path <- fs::path(model_dir, "metrics.json")
+  if (fs::file_exists(metrics_path)) {
+    metrics <- tryCatch({
+      parsed <- parse_metrics(metrics_path)
+      list(
+        validation = if (nrow(parsed$validation) > 0) as.list(parsed$validation[nrow(parsed$validation), , drop = FALSE]) else NULL,
+        training = if (nrow(parsed$training) > 0) as.list(parsed$training[nrow(parsed$training), , drop = FALSE]) else NULL
+      )
+    }, error = function(e) NULL)
+    if (!is.null(metrics)) {
+      metadata$metrics <- metrics
+    }
+  }
+
+  # Pin the model to model board
+  board <- .get_model_board()
   tryCatch({
-    board_to_use <- if (!is.null(config$model_board)) config$model_board else pg_board()
-    publish_model(
+    pin_model(
       model_dir = model_dir,
-      name      = config$output_name,
-      board     = board_to_use,
-      metadata  = training_metadata,
-      include_metrics = TRUE
+      model_id = config$model_id,
+      board = board,
+      metadata = metadata
     )
-    if (!is.null(config$model_description)) cli::cli_alert_info(config$model_description)
+    cli::cli_alert_success("Model saved as {.val {config$model_id}}")
+    cli::cli_alert_info("Load with: {.code from_pretrained(\"{config$model_id}\")}")
   }, error = function(e) {
-    cli::cli_warn("Failed to publish model: {e$message}")
+    cli::cli_abort("Failed to pin model: {e$message}")
   })
+
+  # Cleanup temp workspace
+  if (fs::dir_exists(config$workspace_dir)) {
+    fs::dir_delete(config$workspace_dir)
+  }
+
+  invisible(config$model_id)
+}
+
+#' Parse detectron2 training log for progress
+#'
+#' Extracts iteration and loss information from detectron2 log output.
+#'
+#' @param log_text Character string containing log output
+#' @return List with `iter` and `loss` fields, or NULL if parsing fails
+#' @keywords internal
+parse_detectron2_log <- function(log_text) {
+  lines <- strsplit(log_text, "\n")[[1]]
+
+  # Find lines with iteration info: "iter: XXXX"
+  iter_lines <- lines[grepl("iter:\\s*\\d+", lines)]
+  if (length(iter_lines) == 0) return(NULL)
+
+  # Get latest iteration
+  latest <- tail(iter_lines, 1)
+
+  # Extract iteration number
+  iter_match <- regexpr("iter:\\s*(\\d+)", latest, perl = TRUE)
+  if (iter_match == -1) return(NULL)
+
+  iter_str <- regmatches(latest, iter_match)
+  iter <- as.integer(sub("iter:\\s*", "", iter_str))
+
+  # Extract loss if available
+  loss <- NA
+  loss_match <- regexpr("total_loss:\\s*([0-9.]+)", latest, perl = TRUE)
+  if (loss_match != -1) {
+    loss_str <- regmatches(latest, loss_match)
+    loss <- as.numeric(sub("total_loss:\\s*", "", loss_str))
+  }
+
+  list(iter = iter, loss = loss)
 }
 
 run_local_training <- function(config) {
   train_model_local(
     data_dir         = config$data_dir,
-    output_name      = config$output_name,
+    model_id         = config$model_id,
     max_iter         = config$max_iter,
     learning_rate    = config$learning_rate,
     num_classes      = config$num_classes,
@@ -483,14 +474,16 @@ run_local_training <- function(config) {
     checkpoint_period= config$checkpoint_period,
     ims_per_batch    = config$ims_per_batch,
     num_workers      = config$num_workers,
-    local_output_dir = config$local_output_dir
+    workspace_dir    = config$workspace_dir
   )
 }
 
 run_hpc_training <- function(config) {
   train_model_hpc(
     data_dir         = config$data_dir,
-    output_name      = config$output_name,
+    dataset_id       = config$dataset_id,
+    model_id         = config$model_id,
+    run_id           = config$run_id,
     max_iter         = config$max_iter,
     learning_rate    = config$learning_rate,
     num_classes      = config$num_classes,
@@ -500,38 +493,53 @@ run_hpc_training <- function(config) {
     checkpoint_period= config$checkpoint_period,
     ims_per_batch    = config$ims_per_batch,
     num_workers      = config$num_workers,
-    hpc_env          = config$hpc_env,
     hpc_cpus_per_task= config$hpc_cpus_per_task,
     hpc_mem          = config$hpc_mem,
     gpus             = config$gpus,
-    hpc_host         = config$hpc_host,
-    hpc_user         = config$hpc_user,
-    hpc_base_dir     = config$hpc_base_dir,
-    local_output_dir = config$local_output_dir,
-    auto_version     = config$auto_version
+    workspace_dir    = config$workspace_dir
   )
 }
 
-train_model_local <- function(data_dir, output_name, max_iter, learning_rate, num_classes, backbone, freeze_at, device, eval_period,
-                              checkpoint_period, ims_per_batch, num_workers, local_output_dir) {
+train_model_local <- function(data_dir, model_id, max_iter, learning_rate, num_classes, backbone, freeze_at, device, eval_period,
+                              checkpoint_period, ims_per_batch, num_workers, workspace_dir) {
 
-  output_dir <- fs::path(local_output_dir, output_name)
+  # Extract tar.gz dataset to workspace
+  # Tar contains train/, valid/ at root (no parent directory)
+  # Extract into directory named after dataset_id
+  cli::cli_alert_info("Extracting dataset...")
+
+  # Get dataset_id from tar filename (remove .tar.gz)
+  tar_basename <- fs::path_file(data_dir)
+  dataset_id_from_tar <- sub("\\.tar\\.gz$", "", tar_basename)
+
+  # Create extraction directory
+  dataset_dir <- fs::path(workspace_dir, "dataset", dataset_id_from_tar)
+  fs::dir_create(dataset_dir)
+
+  # Extract tar directly into dataset_dir
+  untar_result <- untar(
+    tarfile = data_dir,
+    exdir = dataset_dir,
+    tar = "internal"
+  )
+
+  if (untar_result != 0) {
+    cli::cli_abort("Failed to extract dataset from {.path {data_dir}}")
+  }
+
+  output_dir <- fs::path(workspace_dir, "output")
   fs::dir_create(output_dir)
-
-  cli::cli_alert_info("Starting local training")
-  cli::cli_alert_info("Data: {.path {data_dir}}")
-  cli::cli_alert_info("Output: {.path {output_dir}}")
 
   python_exe <- reticulate::py_config()$python
   train_script <- system.file("python", "train.py", package = "petrographer")
 
   args <- c(
     train_script,
-    "--dataset-name", paste0(output_name, "_train"),
-    "--annotation-json", fs::path(data_dir, "train", "_annotations.coco.json"),
-    "--image-root", fs::path(data_dir, "train"),
-    "--val-annotation-json", fs::path(data_dir, "valid", "_annotations.coco.json"),
-    "--val-image-root", fs::path(data_dir, "valid"),
+    "--dataset-name", paste0(model_id, "_train"),
+    "--annotation-json", fs::path(dataset_dir, "train", "_annotations.coco.json"),
+    "--image-root", fs::path(dataset_dir, "train"),
+    "--val-annotation-json", fs::path(dataset_dir, "valid", "_annotations.coco.json"),
+    "--val-image-root", fs::path(dataset_dir, "valid"),
     "--output-dir", output_dir,
     "--num-workers", as.character(num_workers),
     "--device", device,
@@ -545,33 +553,24 @@ train_model_local <- function(data_dir, output_name, max_iter, learning_rate, nu
     "--ims-per-batch", as.character(ims_per_batch)
   )
 
-  display_cmd <- paste(
-    shQuote(python_exe),
-    paste(vapply(args, shQuote, character(1)), collapse = " ")
-  )
-  cli::cli_alert_info("Using Python: {.path {python_exe}}")
-  cli::cli_alert_info("Running training command")
-  cli::cli_code(display_cmd)
-
   res <- processx::run(python_exe, args = args, echo = TRUE, echo_cmd = FALSE, error_on_status = FALSE)
   if (!identical(res$status, 0L)) {
     cli::cli_abort("Training failed with exit code: {res$status}")
   }
 
-  cli::cli_alert_success("Local training completed successfully!")
-  cli::cli_alert_info("Model saved to: {.path {output_dir}}")
   return(output_dir)
 }
 
 #' Train model on HPC using SLURM
 #' @keywords internal
-train_model_hpc <- function(data_dir, output_name, max_iter, learning_rate, num_classes, backbone, freeze_at, eval_period, checkpoint_period,
-                            ims_per_batch, num_workers, hpc_env, hpc_cpus_per_task, hpc_mem, gpus, hpc_host, hpc_user,
-                            hpc_base_dir, local_output_dir, auto_version = TRUE) {
+train_model_hpc <- function(data_dir, dataset_id, model_id, run_id, max_iter, learning_rate, num_classes, backbone, freeze_at, eval_period, checkpoint_period,
+                            ims_per_batch, num_workers, hpc_cpus_per_task, hpc_mem, gpus, workspace_dir) {
 
   setup <- hpc_prepare_run(
     data_dir = data_dir,
-    output_name = output_name,
+    dataset_id = dataset_id,
+    model_id = model_id,
+    run_id = run_id,
     max_iter = max_iter,
     learning_rate = learning_rate,
     num_classes = num_classes,
@@ -581,68 +580,68 @@ train_model_hpc <- function(data_dir, output_name, max_iter, learning_rate, num_
     checkpoint_period = checkpoint_period,
     ims_per_batch = ims_per_batch,
     num_workers = num_workers,
-    hpc_env = hpc_env,
     hpc_cpus_per_task = hpc_cpus_per_task,
     hpc_mem = hpc_mem,
     gpus = gpus,
-    hpc_host = hpc_host,
-    hpc_user = hpc_user,
-    hpc_base_dir = hpc_base_dir,
-    local_output_dir = local_output_dir,
-    auto_version = auto_version
+    workspace_dir = workspace_dir
   )
 
-  cli::cli_alert_info("Remote base: {.path {setup$remote$base}}")
-  cli::cli_alert_info("Training command")
-  cli::cli_code(setup$command)
-
-  cli::cli_alert_info("Uploading artifacts to HPC")
-  hpc_upload_artifacts(setup, data_dir)
+  cli::cli_alert_info("Uploading artifacts")
+  hpc_upload_artifacts(setup)
 
   job <- hpc_submit_job(setup)
 
-  cli::cli_alert_info("Waiting for job completion")
-  hipergator::hpg_wait(job)
+  # Set up progress bar with log monitoring
+  remote_log <- fs::path(setup$remote$output, "log.txt")
+  pb_id <- NULL
+
+  # Progress callback
+  update_progress <- function(log_text) {
+    parsed <- parse_detectron2_log(log_text)
+    if (!is.null(parsed) && !is.null(pb_id)) {
+      cli::cli_progress_update(
+        id = pb_id,
+        set = parsed$iter
+      )
+    }
+  }
+
+  # Create progress bar
+  pb_id <- cli::cli_progress_bar(
+    format = "{cli::pb_bar} {cli::pb_current}/{cli::pb_total} iter | ETA: {cli::pb_eta}",
+    total = max_iter,
+    clear = FALSE
+  )
+
+  # Wait with progress monitoring
+  hipergator::hpg_wait(
+    job,
+    log_path = as.character(remote_log),
+    progress_callback = update_progress
+  )
+
+  cli::cli_progress_done(id = pb_id)
 
   cli::cli_alert_info("Downloading results")
   artifact_dir <- hpc_download_results(setup)
 
-  cli::cli_alert_success("HPC training pipeline completed!")
   artifact_dir
 }
 
-hpc_prepare_run <- function(data_dir, output_name, max_iter, learning_rate, num_classes, backbone,
+hpc_prepare_run <- function(data_dir, dataset_id, model_id, run_id, max_iter, learning_rate, num_classes, backbone,
                             freeze_at, eval_period, checkpoint_period, ims_per_batch, num_workers,
-                            hpc_env, hpc_cpus_per_task, hpc_mem, gpus, hpc_host, hpc_user,
-                            hpc_base_dir, local_output_dir, auto_version) {
+                            hpc_cpus_per_task, hpc_mem, gpus, workspace_dir) {
 
-  if (!is.null(hpc_host) || !is.null(hpc_user) || !is.null(hpc_base_dir)) {
-    hipergator::hpg_configure(
-      host = hpc_host %||% "hpg",
-      user = hpc_user,
-      base_dir = hpc_base_dir
-    )
-  }
-
+  # Use existing hipergator configuration
   config <- hipergator::hpg_config()
   if (is.null(config$base_dir)) {
-    cli::cli_abort("Missing `hpc_base_dir`: set the base path on your HPC system or PETROGRAPHER_HPC_BASE_DIR env var.")
+    cli::cli_abort(c(
+      "HPC base directory not configured",
+      "i" = "Call {.code hipergator::hpg_configure(host = ..., base_dir = ...)} before {.code train_model()}"
+    ))
   }
 
-  target <- hipergator::hpg_authenticate()
-
-  if (auto_version) {
-    versioned_name <- resolve_version(
-      base_name = output_name,
-      output_dir = local_output_dir,
-      remote_base_dir = config$base_dir,
-      ssh_target = target
-    )
-    if (versioned_name != output_name) {
-      cli::cli_alert_info("Auto-versioning enabled: {.val {output_name}} -> {.val {versioned_name}}")
-      output_name <- versioned_name
-    }
-  }
+  target <- hipergator::hpg_authenticate(quiet = TRUE)
 
   cpus <- if (!is.null(hpc_cpus_per_task)) {
     hpc_cpus_per_task
@@ -665,17 +664,23 @@ hpc_prepare_run <- function(data_dir, output_name, max_iter, learning_rate, num_
     time = "02:00:00",
     partition = "hpg-b200",
     gpu = gpu_spec,
-    conda_env = if (is.null(hpc_env)) conda_env_path else NULL,
-    modules = if (!is.null(hpc_env)) NULL else c("conda")
+    conda_env = conda_env_path,
+    modules = c("conda")
   )
 
+  # New shared structure: base_dir/datasets/, base_dir/scripts/, base_dir/models/
+  remote_dataset_dir <- fs::path("datasets", dataset_id)
+  remote_dataset_tar <- fs::path("datasets", paste0(dataset_id, ".tar.gz"))
+  remote_script <- "scripts/train.py"
+  remote_output_dir <- fs::path("models", model_id, run_id, "output")
+
   training_args <- c(
-    "--dataset-name", paste0(output_name, "_train"),
-    "--annotation-json", "data/train/_annotations.coco.json",
-    "--image-root", "data/train",
-    "--val-annotation-json", "data/valid/_annotations.coco.json",
-    "--val-image-root", "data/valid",
-    "--output-dir", "output",
+    "--dataset-name", paste0(model_id, "_train"),
+    "--annotation-json", fs::path(remote_dataset_dir, "train", "_annotations.coco.json"),
+    "--image-root", fs::path(remote_dataset_dir, "train"),
+    "--val-annotation-json", fs::path(remote_dataset_dir, "valid", "_annotations.coco.json"),
+    "--val-image-root", fs::path(remote_dataset_dir, "valid"),
+    "--output-dir", remote_output_dir,
     "--num-workers", as.character(num_workers),
     "--max-iter", as.character(max_iter),
     "--learning-rate", as.character(learning_rate),
@@ -689,46 +694,66 @@ hpc_prepare_run <- function(data_dir, output_name, max_iter, learning_rate, num_
     "--num-gpus", as.character(gpus)
   )
 
-  command <- paste("python src/train.py", paste(training_args, collapse = " "))
-
-  if (!is.null(hpc_env)) {
-    cli::cli_warn("hpc_env parameter is deprecated. Use modules configuration in hipergator package instead.")
-  }
-
-  remote_base <- fs::path(config$base_dir, output_name)
-  remote_data <- fs::path(remote_base, "data")
-  remote_src <- fs::path(remote_base, "src")
-  remote_output <- fs::path(remote_base, "output")
-
-  output_exists <- processx::run(
-    "ssh", c(target, paste("test -d", shQuote(remote_output))),
-    timeout = 10, error_on_status = FALSE
+  # Extract tar.gz before training
+  # Tar contains train/, valid/ at root - extract into dataset_id directory
+  # Suppress warnings with 2>/dev/null
+  extract_cmd <- sprintf(
+    "mkdir -p %s && tar -xzf %s -C %s 2>/dev/null",
+    remote_dataset_dir,
+    remote_dataset_tar,
+    remote_dataset_dir
   )
+  training_cmd <- paste("python", remote_script, paste(training_args, collapse = " "))
+  command <- paste(extract_cmd, "&&", training_cmd)
 
-  if (output_exists$status == 0) {
-    cli::cli_warn(c(
-      "Remote output directory already exists: {.path {remote_output}}",
-      "i" = "This suggests a previous training run with the same version name.",
-      "i" = "Versioning should prevent this. Consider manually removing the remote directory or using a different output_name."
-    ))
-  }
+  # Absolute paths for upload/download operations
+  remote_base <- config$base_dir
+  remote_dataset_tar_abs <- fs::path(remote_base, remote_dataset_tar)
+  remote_dataset_dir_abs <- fs::path(remote_base, remote_dataset_dir)
+  remote_scripts_abs <- fs::path(remote_base, "scripts")
+  remote_output_abs <- fs::path(remote_base, "models", model_id, run_id, "output")
 
   python_src <- system.file("python", package = "petrographer")
 
   list(
-    output_name = output_name,
+    model_id = model_id,
+    dataset_id = dataset_id,
+    run_id = run_id,
     target = target,
     resources = resources,
     command = command,
-    remote = list(base = remote_base, data = remote_data, src = remote_src, output = remote_output),
-    local = list(output_root = local_output_dir, download_dir = fs::path(local_output_dir, output_name)),
+    remote = list(
+      base = remote_base,
+      dataset_tar = remote_dataset_tar_abs,
+      dataset_dir = remote_dataset_dir_abs,
+      scripts = remote_scripts_abs,
+      output = remote_output_abs
+    ),
+    local = list(
+      workspace_dir = workspace_dir,
+      download_dir = fs::path(workspace_dir, "hpc_output"),
+      data_dir = data_dir
+    ),
     python_src = python_src
   )
 }
 
-hpc_upload_artifacts <- function(setup, data_dir) {
-  hipergator::hpg_upload(setup$target, data_dir, setup$remote$data)
-  hipergator::hpg_upload(setup$target, setup$python_src, setup$remote$src)
+hpc_upload_artifacts <- function(setup) {
+  # Ensure remote directory structure exists
+  remote_dirs <- c(
+    setup$remote$base,
+    fs::path(setup$remote$base, "datasets"),
+    fs::path(setup$remote$base, "scripts"),
+    fs::path_dir(setup$remote$output)  # models/{model_id}/{run_id}/
+  )
+  hipergator::hpg_mkdir(setup$target, remote_dirs, quiet = TRUE)
+
+  # Upload dataset tar.gz to shared location (rsync skips if unchanged)
+  hipergator::hpg_upload(setup$target, setup$local$data_dir, setup$remote$dataset_tar, quiet = TRUE)
+
+  # Upload train.py to shared scripts location (rsync skips if unchanged)
+  train_py_path <- fs::path(setup$python_src, "train.py")
+  hipergator::hpg_upload(setup$target, train_py_path, fs::path(setup$remote$scripts, "train.py"), quiet = TRUE)
 }
 
 hpc_submit_job <- function(setup) {
@@ -738,47 +763,38 @@ hpc_submit_job <- function(setup) {
     command = setup$command,
     job_name = "petrographer_train",
     working_dir = setup$remote$base,
-    ssh_target = setup$target
+    ssh_target = setup$target,
+    quiet = TRUE
   )
 }
 
 hpc_download_results <- function(setup) {
   local_download_dir <- setup$local$download_dir
+  fs::dir_create(local_download_dir)
 
-  if (fs::dir_exists(local_download_dir)) {
-    if (!fs::path_has_parent(local_download_dir, setup$local$output_root)) {
-      cli::cli_abort(c(
-        "Local download directory exists but is outside expected location:",
-        "x" = "Expected parent: {.path {setup$local$output_root}}",
-        "x" = "Actual path: {.path {local_download_dir}}",
-        "i" = "Refusing to delete for safety. Please manually remove or use different output_name."
-      ))
-    }
+  # Download only essential files
+  essential_files <- c("model_best.pth", "config.yaml", "metadata.json", "metrics.json", "log.txt")
 
-    cli::cli_warn(c(
-      "Local directory already exists: {.path {local_download_dir}}",
-      "i" = "This may indicate an interrupted previous download.",
-      "i" = "Removing to ensure clean download..."
-    ))
-    fs::dir_delete(local_download_dir)
+  for (file in essential_files) {
+    remote_file <- fs::path(setup$remote$output, file)
+    local_file <- fs::path(local_download_dir, file)
+
+    tryCatch({
+      hipergator::hpg_download(setup$target, remote_file, local_file, quiet = TRUE)
+    }, error = function(e) {
+      # metadata.json, metrics.json and log.txt are optional
+      if (!file %in% c("metadata.json", "metrics.json", "log.txt")) {
+        cli::cli_abort("Failed to download required file {.path {file}}: {e$message}")
+      }
+    })
   }
 
-  hipergator::hpg_download(setup$target, setup$remote$output, local_download_dir)
-
-  artifact_dir <- local_download_dir
-  nested_output <- fs::path(local_download_dir, "output")
-  if (!fs::file_exists(fs::path(artifact_dir, "model_final.pth")) &&
-      fs::dir_exists(nested_output) &&
-      fs::file_exists(fs::path(nested_output, "model_final.pth"))) {
-    artifact_dir <- nested_output
-  }
-
-  required_files <- c("model_final.pth", "config.yaml")
-  missing <- required_files[!fs::file_exists(fs::path(artifact_dir, required_files))]
+  # Verify required files
+  required_files <- c("model_best.pth", "config.yaml")
+  missing <- required_files[!fs::file_exists(fs::path(local_download_dir, required_files))]
   if (length(missing) > 0) {
     cli::cli_abort("Required files missing after download: {paste(missing, collapse = ', ')}")
   }
 
-  artifact_dir
+  local_download_dir
 }
-

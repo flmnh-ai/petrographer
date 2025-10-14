@@ -35,6 +35,11 @@ vignettes/*.pdf
 *.utf8.md
 *.knit.md
 
+# Editor backup files
+*.bak
+*.bak2
+*~
+
 # R Environment Variables
 .Renviron
 
@@ -52,3 +57,7 @@ src/__pycache__/
 /archived
 .Rproj.user
 docs
+/vignettes/model-library_files
+/pkgdown
+/petrographer-pins
+/.petrographer

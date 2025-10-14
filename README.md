@@ -1,366 +1,472 @@
-# petrographer: Petrographic Image Analysis with Detectron2 and SAHI
+# petrographer <img src="man/figures/logo.png" align="right" height="139" alt="" />
 
-Automated instance segmentation and morphological analysis of petrographic thin sections using state-of-the-art computer vision models.
+<!-- badges: start -->
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
+[![R-CMD-check](https://github.com/flmnh-ai/petrographer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/flmnh-ai/petrographer/actions/workflows/R-CMD-check.yaml)
+<!-- badges: end -->
 
-## Overview
+> HuggingFace-like interface for petrographic thin section analysis with Detectron2 and SAHI
 
-This R package provides a complete workflow for training, evaluating, and analyzing petrographic thin section images using Detectron2 with SAHI (Slicing Aided Hyper Inference) for improved detection of small objects. The workflow combines Python-based machine learning with R-based analysis and visualization through a clean, modern interface.
+Automated instance segmentation and morphological analysis of petrographic thin sections using state-of-the-art computer vision models. Provides a clean, modern workflow for both researchers running inference with pretrained models and developers training custom models.
 
-Quick start (local)
+## Quick Start (Users)
 
-```
-library(petrographer)
-
-# Validate dataset
-validate_dataset("data/processed/shell_mixed")
-
-# Train locally
-model_dir <- train_model(
-  data_dir = "data/processed/shell_mixed",
-  output_name = "shell_detector_v3",
-  num_classes = 5,
-  device = "cpu" # or "cuda"/"mps"
-)
-
-evaluate_training(model_dir)
-```
-
-Quick start (HPC)
-
-**Setup**: First configure your HPC defaults in `.Renviron`:
-
-```r
-# Add to your .Renviron file (edit with usethis::edit_r_environ())
-usethis::edit_r_environ("project")
-
-# Add these lines:
-PETROGRAPHER_HPC_HOST="hpg"
-PETROGRAPHER_HPC_BASE_DIR="/blue/your_lab/your_user"
-```
-
-Then restart R and train:
+For running inference with pretrained models:
 
 ```r
 library(petrographer)
 
-# HPC settings are read from environment variables
-model_dir <- train_model(
-  data_dir = "data/processed/shell_mixed",
-  output_name = "shell_detector_v3",
-  num_classes = 5,
-  hpc_user = "your_user"  # optional if different from system user
-)
+# Load model from public hub
+model <- from_pretrained("inclusions")
+
+# Run prediction on an image
+results <- predict(model, "my_image.jpg")
+
+# Analyze results
+summarize_by_image(results)
+get_population_stats(results)
 ```
 
-**Alternative**: Override environment variables if needed:
+## Quick Start (Developers)
+
+For training custom models:
 
 ```r
-model_dir <- train_model(
-  data_dir = "data/processed/shell_mixed", 
-  output_name = "shell_detector_v3",
-  num_classes = 5,
-  hpc_host = "different.cluster.edu",
-  hpc_base_dir = "/different/path"
+library(petrographer)
+
+# Validate dataset structure
+validate_dataset("data/processed/my_dataset")
+
+# Train model (automatically saves to .petrographer/)
+train_model(
+  data_dir = "data/processed/my_dataset",
+  output_name = "my_model",
+  num_classes = 5
 )
+
+# Load your trained model
+model <- load_model("my_model")
+results <- predict(model, "test_image.jpg")
 ```
 
-Safety
+## Table of Contents
 
-- No remote deletion is performed automatically.
-- Use `rsync_mode = "mirror"` to avoid accumulating stale files across reruns.
+- [Installation](#installation)
+- [Model Hub](#model-hub)
+- [Training Models](#training-models)
+- [Running Predictions](#running-predictions)
+- [Core Functions](#core-functions)
+- [Dataset Management](#dataset-management)
+- [HPC Training](#hpc-training-slurm)
+- [Documentation](#documentation)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Citation](#citation)
 
-### Key Features
+## Installation
 
-- **Advanced Instance Segmentation**: Uses Detectron2 Mask R-CNN with SAHI for high-quality detection
-- **Morphological Analysis**: Comprehensive particle characterization (size, shape, orientation, etc.)
-- **Unified Training Interface**: Local and HPC training through R functions with automatic job management
-- **Interactive Analysis**: Modern R workflow using `cli`, `fs`, and `glue` for professional output
-- **Batch Processing**: Efficient processing of large image collections
-- **Model Management**: Automatic model download and caching system
-
-## Installation and Setup
+```r
+# Install from GitHub
+remotes::install_github("flmnh-ai/petrographer")
+```
 
 ### Prerequisites
 
-- **Python 3.8+** with detectron2, SAHI, and dependencies
-- **R 4.0+** with required packages
-- **CUDA-capable GPU** (recommended for training)
+- **R 4.1+**
+- **Python 3.8+** with detectron2, sahi, torch, torchvision, opencv-python, scikit-image
+- **GPU recommended** for training (CPU works fine for inference)
 
-### R Dependencies
+Python dependencies are managed automatically via `reticulate`. The package will guide you through setup on first use.
 
-```r
-install.packages(c("reticulate", "tidyverse", "magick", "scico", 
-                   "patchwork", "glue", "cli", "fs", "future"))
-```
+## Model Hub
 
-### Python Dependencies
+Models are managed via the [pins](https://pins.rstudio.com/) package with automatic versioning and caching:
 
-The package automatically manages Python dependencies. Required packages:
-- detectron2
-- sahi  
-- torch, torchvision
-- opencv-python
-- scikit-image
+### Public Hub
 
-## Quick Start
-
-### 1. Load the Package Functions
+Hosted at:
+- Models: https://flmnh-ai.github.io/petrographer/models/
+- Datasets: https://flmnh-ai.github.io/petrographer/datasets/
 
 ```r
-# Load all package functions
-source("R/model.R")
-source("R/training.R") 
-source("R/prediction.R")
-source("R/data_utils.R")
-source("R/summary.R")
+# Download and load pretrained model
+model <- from_pretrained("shell_v3", device = "cpu", confidence = 0.5)
+
+# Browse available models
+list_models()
+
+# Get model details
+model_info("shell_v3")
 ```
 
-### 2. Data Preparation
+### Local Training Board
 
-Organize your data in COCO format:
+Automatically created at `.petrographer/` in your project when training models:
 
-```
-data/processed/
-├── shell_mixed/         # 5-class shell detection
-├── inclusions/          # 2-class inclusion detection  
-├── background_removal/  # 2-class background removal
-│   ├── train/
-│   │   ├── _annotations.coco.json
-│   │   └── [training images]
-│   └── val/
-│       ├── _annotations.coco.json
-│       └── [validation images]
-```
-
-### 3. Model Training
-
-#### Local Training
 ```r
-model_path <- train_model(
-  data_dir = "data/processed/shell_mixed",
-  output_name = "shell_detector_v3",
-  max_iter = 2000,
+# List your locally trained models
+list_trained_models()
+
+# Load a local model (convenience wrapper)
+model <- load_model("my_model")
+
+# Or explicitly specify local board
+model <- from_pretrained("my_model", board = "local")
+```
+
+### Custom Boards
+
+Advanced users can specify their own boards:
+
+```r
+my_board <- pins::board_folder("~/shared-models", versioned = TRUE)
+model <- from_pretrained("model_id", board = my_board)
+```
+
+## Training Models
+
+### Local Training
+
+```r
+train_model(
+  data_dir = "data/processed/shell_dataset",
+  output_name = "shell_detector_v4",
   num_classes = 5,
-  device = "cuda"  # or "cpu", "mps"
+  max_iter = 2000,      # default for fine-tuning
+  freeze_at = 2,        # freeze stem + res2 (default)
+  backbone = "resnet50", # resnet50, resnet101, resnext101
+  device = "cuda"        # or "cpu", "mps"
 )
 ```
 
-#### HPC Training (SLURM)
-```r
-model_path <- train_model(
-  data_dir = "data/processed/inclusions", 
-  output_name = "inclusions_v2",
-  max_iter = 4000,
-  num_classes = 2,
-  hpc_host = "hpg.rc.ufl.edu",
-  hpc_user = "your.username",
-  hpc_base_dir = "/blue/your.group/your.username"
-)
+### Training Configuration
+
+Default parameters optimized for fine-tuning:
+
+- `max_iter = 2000` - Training iterations
+- `ims_per_batch = NA` - Auto-resolves to 2 images per GPU
+- `freeze_at = 2` - Freeze backbone stem + res2 layers
+- `learning_rate = 0.00025` - Base LR (auto-scaled by batch size and freeze_at)
+- `backbone = "resnet50"` - Options: resnet50, resnet101, resnext101, or any Detectron2 model zoo key
+
+The package automatically:
+- Validates dataset structure
+- Computes optimal batch sizes and learning rates
+- Handles version conflicts
+- Saves model to `.petrographer/models/` with full metadata
+- Creates training manifests with validation metrics
+
+### Dataset Preparation
+
+Organize data in COCO format:
+
+```
+data/processed/my_dataset/
+├── train/
+│   ├── _annotations.coco.json
+│   └── [training images]
+└── val/
+    ├── _annotations.coco.json
+    └── [validation images]
 ```
 
-### 4. Model Loading and Prediction
+Validate before training:
 
 ```r
-# Load trained model (automatically downloads if needed)
-model <- load_model(confidence = 0.5, device = "cpu")
+validate_dataset("data/processed/my_dataset")
+```
 
-# Analyze single image
-result <- predict_image(
-  image_path = "data/raw/sample_image.jpg",
-  model = model,
-  use_slicing = TRUE,
+For images with highly variable sizes, use SAHI slicing:
+
+```r
+slice_dataset(
+  input_dir = "data/raw/my_dataset",
+  output_dir = "data/processed/my_dataset_sliced",
   slice_size = 512,
   overlap = 0.2
 )
+```
 
-# Batch processing
-batch_result <- predict_images(
-  input_dir = "data/raw/batch_images/",
+## Running Predictions
+
+### Single Image
+
+```r
+# Simple prediction (saves visualization by default)
+results <- predict(model, "image.jpg")
+
+# With custom SAHI parameters
+results <- predict_image(
+  image_path = "image.jpg",
   model = model,
-  output_dir = "results/batch_analysis"
+  use_slicing = TRUE,
+  slice_size = 512,
+  overlap = 0.2,
+  save_visualizations = TRUE
 )
 ```
 
-### 5. Analysis and Visualization
+### Batch Processing
 
-Use the analysis notebooks:
-- `petrography_analysis.qmd` - Main analysis workflow
-- `training/training_shell.qmd` - Shell detection training
-- `training/training_inclusions.qmd` - Inclusion detection training  
-- `training/training_background_removal.qmd` - Background removal training
+```r
+results <- predict_images(
+  input_dir = "images/",
+  model = model,
+  output_dir = "results/"
+)
+```
+
+### Model Evaluation
+
+```r
+# Evaluate training metrics
+evaluate_training("Detectron2_Models/my_model")
+
+# Evaluate on COCO dataset
+metrics <- evaluate_model_sahi(
+  model = model,
+  data_dir = "data/processed/test_dataset"
+)
+```
+
+### Analysis
+
+Each detected object includes comprehensive morphological properties:
+
+- **Basic metrics**: Area, perimeter, centroid coordinates
+- **Shape descriptors**: Eccentricity, orientation, circularity, aspect ratio
+- **Advanced features**: Solidity, extent, major/minor axis lengths
+
+```r
+# Per-image summary statistics
+image_stats <- summarize_by_image(results)
+
+# Population-level statistics
+pop_stats <- get_population_stats(results)
+```
 
 ## Core Functions
 
 ### Model Management
-- `load_model()` - Load detection model with caching
-- `download_model()` - Download pretrained models
+
+- `from_pretrained()` - Load model from hub, local board, or custom board
+- `load_model()` - Convenience wrapper for locally trained models
+- `list_models()` / `list_trained_models()` - List available models
+- `model_info()` - Show model metadata and validation metrics
+- `pin_model()` - Publish model to board (maintainers only)
+
+### Dataset Management
+
+- `validate_dataset()` - Check COCO format and show diagnostics
+- `slice_dataset()` - SAHI dataset slicing for mixed image sizes
+- `pin_dataset()` / `list_datasets()` - Dataset versioning and distribution
 
 ### Training
-- `train_model()` - Unified training interface (local or HPC)
-- `evaluate_training()` - Analyze training metrics and logs
 
-### Prediction  
-- `predict_image()` - Analyze single image with morphological analysis
-- `predict_images()` - Process multiple images efficiently
+- `train_model()` - Unified training interface (local or HPC)
+- `evaluate_training()` - Parse and visualize training metrics
+- `prepare_training_config()` - Validate training parameters
+
+### Prediction
+
+- `predict()` - S3 method for PetrographyModel objects
+- `predict_image()` - Single image inference with SAHI + morphology
+- `predict_images()` - Batch processing with parallel support
+- `evaluate_model_sahi()` - COCO evaluation metrics
 
 ### Analysis
-- `enhance_results()` - Add derived morphological properties  
-- `summarize_by_image()` - Per-image statistical summaries
-- `get_population_stats()` - Overall population metrics
 
-## Output Files
+- `summarize_by_image()` - Per-image statistics
+- `get_population_stats()` - Population-level metrics
 
-### Prediction Results
-- **CSV files**: Detailed morphological measurements per object
-- **Visualizations**: Images with detected objects and confidence scores
-- **Summary statistics**: Per-image and population-level metrics
+## HPC Training (SLURM)
 
-### Morphological Properties
-Each detected object includes:
-- **Basic metrics**: Area, perimeter, centroid coordinates
-- **Shape descriptors**: Eccentricity, orientation, circularity, aspect ratio  
-- **Advanced features**: Solidity, extent, major/minor axis lengths
-- **Derived metrics**: Log area, size categories, shape categories
+For training on HPC clusters with SLURM (e.g., UF HiPerGator):
 
-### Training Evaluation
-- **Training curves**: Loss progression over iterations
-- **Validation metrics**: Model performance on validation set
-- **Learning rate schedule**: LR changes during training
+### One-Time Setup
+
+Configure HPC defaults in `.Renviron`:
+
+```r
+usethis::edit_r_environ("project")
+```
+
+Add these lines:
+
+```
+PETROGRAPHER_HPC_HOST="hpg"
+PETROGRAPHER_HPC_BASE_DIR="/blue/yourlab/youruser"
+```
+
+Restart R for changes to take effect.
+
+### HPC Training
+
+```r
+# Triggers HPC mode automatically when hpc_user is provided
+model_dir <- train_model(
+  data_dir = "data/processed/my_dataset",
+  output_name = "my_model",
+  num_classes = 5,
+  hpc_user = "youruser"
+)
+```
+
+The package automatically:
+- Uploads dataset and training script via rsync
+- Submits SLURM job with optimal GPU resources
+- Monitors job status with progress updates
+- Downloads trained model when complete
+- Cleans up remote files (data preserved by default)
+
+### HPC Job Control
+
+```r
+# Monitor job status
+hpg_status(job)
+
+# Wait for completion with progress
+hpg_wait(job)
+
+# Cancel running job
+hpg_cancel(job)
+
+# Get job details
+hpg_job_info(job)
+```
+
+## Documentation
+
+- **Website**: https://flmnh-ai.github.io/petrographer/
+- **Vignettes**:
+  - [Model Library](https://flmnh-ai.github.io/petrographer/articles/model-library.html) - Browse and compare trained models
+  - [Training Models](https://flmnh-ai.github.io/petrographer/articles/training-models.html) - Complete training guide
+  - [Whole Slide Basics](https://flmnh-ai.github.io/petrographer/articles/whole-slide-basics.html) - Working with large images
+- **Example Notebooks**: See `inst/notebooks/` for complete workflows:
+  - `model_from_pretrained.qmd` - Loading and using pretrained models
+  - `petrography_analysis.qmd` - End-to-end analysis workflow
+  - `training_*.qmd` - Training examples for different use cases
 
 ## Configuration
 
-### Training Parameters
-Key parameters for `train_model()`:
-- `max_iter`: Training iterations (2000-4000 typical)
-- `learning_rate`: Base learning rate (0.00025-0.001)
-- `num_classes`: Number of object classes
-- `eval_period`: Validation frequency (100-500 iterations)
-- `device`: "cpu", "cuda", or "mps"
+### SAHI Parameters
 
-### SAHI Parameters  
 Optimize for your data:
-- `slice_size`: Slice dimensions (512 recommended)
-- `overlap`: Overlap between slices (0.2 typical)
-- `confidence`: Detection threshold (0.3-0.7)
 
-### HPC Configuration
-For SLURM training:
-- `hpc_host`: SSH hostname (e.g., "hpg.rc.ufl.edu")  
-- `hpc_user`: Your username
-- `hpc_base_dir`: Remote working directory
-- Automatic file sync and job monitoring
+```r
+model <- from_pretrained(
+  "shell_v3",
+  confidence = 0.5,    # Detection threshold (0.3-0.7 typical)
+  device = "cuda"      # "cpu", "cuda", or "mps"
+)
 
-## Performance Optimization
+results <- predict_image(
+  image_path = "image.jpg",
+  model = model,
+  slice_size = 512,    # Slice dimensions (512 recommended)
+  overlap = 0.2        # Overlap between slices (0.2 typical)
+)
+```
 
-### For Dense Small Objects (200+ per image)
-- Keep `ROI_HEADS.BATCH_SIZE_PER_IMAGE = 512`
-- Use moderate batch sizes (`IMS_PER_BATCH = 4`)
-- Enable mixed precision training (AMP)
-- Consider higher `TEST.DETECTIONS_PER_IMAGE` values
+### Environment Variables
 
-### Training Speed
-- Use `IMS_PER_BATCH = 4` for good speed/accuracy balance
-- Enable AMP for 30-50% speedup on modern GPUs
-- Optimize `NUM_WORKERS` to match available CPU cores
-- Use 4-hour SLURM time limits for safety
+Optional configuration:
+
+- `PETROGRAPHER_HUB_URL` - Custom model hub URL
+- `PETROGRAPHER_BOARD_PATH` - Custom local board location
+- `PETROGRAPHER_HPC_HOST` - Default HPC hostname
+- `PETROGRAPHER_HPC_BASE_DIR` - Default HPC working directory
 
 ## Troubleshooting
 
 ### Training Issues
-- **CUDA out of memory**: Reduce `IMS_PER_BATCH` (try 2-4)
-- **Slow training**: Check GPU utilization, enable AMP
-- **Job timeouts**: Training time scales with image resolution and object density
 
-### Detection Issues  
+- **CUDA out of memory**: Reduce `ims_per_batch` (try 1-2) or use smaller images
+- **Slow training**: Check GPU utilization, consider different backbone
+- **Poor convergence**: Increase `max_iter` or adjust `learning_rate`
+
+### Detection Issues
+
 - **Missing small objects**: Lower confidence threshold, use smaller slice sizes
 - **False positives**: Increase confidence threshold, check training data quality
 - **Poor segmentation**: Verify annotation quality, increase training iterations
 
 ### R-Python Integration
-- **Import errors**: Check `py_require()` calls in notebooks
-- **Environment issues**: Restart R session, verify Python environment
-- **Path problems**: Use absolute paths, check file existence
+
+- **Import errors**: Check Python environment with `reticulate::py_config()`
+- **Environment issues**: Restart R session, reinstall Python packages
+- **Path problems**: Use absolute paths with `fs::path_abs()`
+
+### HPC Issues
+
+- **Connection timeout**: Check SSH config, verify Duo authentication
+- **Job failures**: Check SLURM logs with `hpg_job_info(job)`
+- **Transfer errors**: Verify paths and permissions on remote system
 
 ## File Structure
 
 ```
-petrography/
-├── R/                          # Package functions
-│   ├── model.R                 # Model loading and management
-│   ├── training.R              # Training orchestration  
-│   ├── hpc_utils.R             # HPC/SLURM utilities
-│   ├── prediction.R            # Prediction and analysis
-│   ├── data_utils.R            # Data processing utilities
-│   └── summary.R               # Summary statistics
-├── src/
-│   └── train.py                # Python training script
-├── training/                   # Training notebooks
-│   ├── training_shell.qmd
-│   ├── training_inclusions.qmd
-│   └── training_background_removal.qmd
-├── petrography_analysis.qmd    # Main analysis workflow
-└── data/processed/             # Training datasets (gitignored)
+petrographer/
+├── R/                            # Package functions
+│   ├── pins.R                    # Model/dataset distribution via pins
+│   ├── model.R                   # Model loading utilities
+│   ├── training.R                # Training orchestration (local + HPC)
+│   ├── prediction.R              # Inference + evaluation
+│   ├── dataset.R                 # Dataset utilities
+│   ├── morphology.R              # Property extraction via scikit-image
+│   └── summary.R                 # Analysis and aggregation
+├── inst/
+│   ├── python/
+│   │   ├── train.py              # Detectron2 training script
+│   │   └── slice_dataset.py      # SAHI dataset slicing utility
+│   └── notebooks/                # Example workflows
+├── vignettes/                    # Package documentation
+│   ├── model-library.qmd         # Browse trained models
+│   ├── training-models.qmd       # Training guide
+│   └── whole-slide-basics.qmd    # Large image workflows
+├── tests/                        # Unit tests
+└── .petrographer/                # Local training board (auto-created)
+    ├── models/                   # Trained models with versions
+    └── datasets/                 # Pinned datasets
 ```
+
+## Performance Optimization
+
+### For Dense Small Objects (200+ per image)
+
+- Keep `ROI_HEADS.BATCH_SIZE_PER_IMAGE = 512` (default)
+- Use SAHI slicing with `slice_size = 512` and `overlap = 0.2`
+- Consider `TEST.DETECTIONS_PER_IMAGE = 1000` for very dense images
+
+### Training Speed
+
+- Use `ims_per_batch = 2` per GPU for good speed/accuracy balance
+- ResNet-50 backbone is fastest, ResNeXt-101 for maximum accuracy
+- Multi-GPU training automatically scales batch size and learning rate
+
+## Contributing
+
+This is research software under active development. Breaking changes may occur between versions. See `CLAUDE.md` for development guidelines and philosophy.
 
 ## Citation
 
-If you use this workflow in your research, please cite:
+If you use this package in your research, please cite:
 
 ```bibtex
-@software{petrography_analysis,
-  title={Petrographic Image Analysis with Detectron2 and SAHI},
-  author={Nicolas Gauthier},
-  year={2025},
-  url={https://github.com/your-repo/petrography}
+@software{petrographer,
+  title = {petrographer: Petrographic Thin Section Analysis with Deep Learning},
+  author = {Nicolas Gauthier and Ashley Rutkoski},
+  year = {2025},
+  url = {https://github.com/flmnh-ai/petrographer},
+  note = {R package version 0.0.0.9000}
 }
 ```
 
 ## Acknowledgments
 
-- [Detectron2](https://github.com/facebookresearch/detectron2) for instance segmentation
-- [SAHI](https://github.com/obss/sahi) for sliced inference
-- [reticulate](https://rstudio.github.io/reticulate/) for R-Python integration
+- [Detectron2](https://github.com/facebookresearch/detectron2) - Facebook AI Research's detection framework
+- [SAHI](https://github.com/obss/sahi) - Slicing aided hyper inference for small object detection
+- [reticulate](https://rstudio.github.io/reticulate/) - R-Python integration
+- [pins](https://pins.rstudio.com/) - Versioned data publishing and sharing
+- [hipergator](https://github.com/flmnh-ai/hipergator) - SLURM HPC integration for R
 - Modern R utilities: [cli](https://cli.r-lib.org/), [fs](https://fs.r-lib.org/), [glue](https://glue.tidyverse.org/)
-
-## Model Registry (pins)
-
-Use the pins package to publish and load trained models by name. This is optional and off by default.
-
-Basic flow:
-
-```r
-library(petrographer)
-
-# 1) Configure a board (defaults to local, versioned)
-board <- pg_board()  # or set PETRO_PINS_PATH or PETRO_S3_BUCKET env vars
-
-# 2) Publish a trained model directory
-publish_model(
-  model_dir = "Detectron2_Models/shell_detector_v3",
-  name = "shell_detector_v3",
-  board = board,
-  metadata = list(owner = Sys.info()[["user"]]),
-  include_metrics = TRUE
-)
-
-# 3) Load a model by name
-mdl <- load_model(model_name = "shell_detector_v3", device = "cpu")
-
-# 4) Discover pins (optional; uses pins directly)
-if (requireNamespace("pins", quietly = TRUE)) {
-  pins::pin_list(board)
-  pins::pin_meta(board, "shell_detector_v3")
-}
-```
-
-Publish automatically after training:
-
-```r
-train_model(
-  data_dir = "data/processed/shell_mixed",
-  output_name = "shell_detector_v4",
-  num_classes = 5,
-  publish_after_train = TRUE,
-  model_board = pg_board()
-)
-```

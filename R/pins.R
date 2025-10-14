@@ -1,117 +1,212 @@
-# Minimal pins integration for publishing and retrieving models
+# ============================================================================
+# Pins Integration for Model Hub
+# ============================================================================
 
-#' Get a configured pins board for petrographer models
-#'
-#' Returns a pins board configured from environment variables or defaults.
-#' Use this board with [publish_model()] and [get_model()].
-#'
-#' Configuration precedence:
-#' - `PETRO_S3_BUCKET` [+ optional `PETRO_S3_PREFIX`] → S3 board (versioned)
-#' - `PETRO_PINS_PATH` → folder board at that path (versioned)
-#' - otherwise → local board (versioned)
-#'
-#' @param config Optional board object override (rarely needed). If provided
-#'   and it inherits from a `pins_board`, it will be returned as-is.
-#' @return A `pins_board` object.
-#' @export
-pg_board <- function(config = NULL) {
-  if (!requireNamespace("pins", quietly = TRUE)) {
-    cli::cli_abort("pins is required. Install with install.packages('pins')")
-  }
+# The public model and dataset hub URLs (served via pkgdown)
+.hub_models_url <- "https://flmnh-ai.github.io/petrographer/models/"
+.hub_datasets_url <- "https://flmnh-ai.github.io/petrographer/datasets/"
 
-  if (!is.null(config) && inherits(config, "pins_board")) return(config)
-
-  pins_path <- Sys.getenv("PETRO_PINS_PATH", "")
-  s3_bucket <- Sys.getenv("PETRO_S3_BUCKET", "")
-  s3_prefix <- Sys.getenv("PETRO_S3_PREFIX", "petrographer")
-
-  if (nzchar(s3_bucket)) {
-    return(pins::board_s3(bucket = s3_bucket, prefix = s3_prefix, versioned = TRUE))
-  }
-  if (nzchar(pins_path)) {
-    return(pins::board_folder(pins_path, versioned = TRUE))
-  }
-  pins::board_local(versioned = TRUE)
+# Internal: Get dataset board
+.get_dataset_board <- function() {
+  path <- here::here(".petrographer/datasets")
+  fs::dir_create(path, recurse = TRUE)
+  pins::board_folder(path, versioned = TRUE)
 }
 
-#' Publish (pin) a trained model directory to a board
-#'
-#' Publishes Detectron2 artifacts (`model_final.pth`, `config.yaml`) and, when
-#' present, `metrics.json` as a versioned files pin using [pins]. A small
-#' `petrographer_metadata.json` is written into the model directory and included
-#' for portability. Additional metadata is attached to the pin via `metadata`.
-#'
-#' @param model_dir Directory containing `model_final.pth` and `config.yaml`.
-#' @param name Pin name to publish under.
-#' @param board A pins board (defaults to [pg_board()]).
-#' @param metadata Optional named list to store as pin metadata.
-#' @param include_metrics Whether to include `metrics.json` if present (default: TRUE).
-#' @return A pin metadata list as returned by `pins::pin_meta()`.
-#' @export
-publish_model <- function(model_dir, name, board = pg_board(), metadata = list(), include_metrics = TRUE) {
-  if (!requireNamespace("pins", quietly = TRUE)) {
-    cli::cli_abort("pins is required. Install with install.packages('pins')")
-  }
-
-  model_dir <- fs::path_abs(fs::path_norm(model_dir))
-  model_file <- fs::path(model_dir, "model_final.pth")
-  config_file <- fs::path(model_dir, "config.yaml")
-  if (!fs::file_exists(model_file)) cli::cli_abort("Missing file: {.path {model_file}}")
-  if (!fs::file_exists(config_file)) cli::cli_abort("Missing file: {.path {config_file}}")
-
-  files <- c(model_file, config_file)
-  metrics_file <- fs::path(model_dir, "metrics.json")
-  if (isTRUE(include_metrics) && fs::file_exists(metrics_file)) files <- c(files, metrics_file)
-
-  md <- c(list(model_dir = as.character(model_dir), published = Sys.time()), metadata)
-
-  # Write a self-describing metadata JSON alongside artifacts for portability
-  meta_json <- fs::path(model_dir, "petrographer_metadata.json")
-  pg_meta <- list(
-    name = name,
-    published = as.character(Sys.time()),
-    model_dir = as.character(model_dir),
-    artifacts = basename(files),
-    metadata = metadata
-  )
-  try({
-    jsonlite::write_json(pg_meta, meta_json, auto_unbox = TRUE, pretty = TRUE)
-    files <- c(files, meta_json)
-  }, silent = TRUE)
-  cli::cli_alert_info("Publishing model as pin: {.strong {name}}")
-  pins::pin_upload(board, files, name = name, metadata = md)
-  pins::pin_meta(board, name)
+# Internal: Get model board
+.get_model_board <- function() {
+  path <- here::here(".petrographer/models")
+  fs::dir_create(path, recurse = TRUE)
+  pins::board_folder(path, versioned = TRUE)
 }
 
-#' Retrieve a model pin and return resolved file paths
+#' Load a pretrained model
 #'
-#' Downloads model artifacts from a pins board and returns resolved paths to
-#' `model_final.pth` and `config.yaml`, along with pin metadata.
+#' Loads models from local training board, hub, or custom board.
+#' By default, checks local models first, then falls back to the public hub.
 #'
-#' @param name Pin name.
-#' @param version Optional version id (NULL = latest).
-#' @param board A pins board (defaults to [pg_board()]).
-#' @return A list with fields `model_path`, `config_path`, and `pin_meta`.
+#' @param model_id Model name (e.g., "shell_v3")
+#' @param version Specific version (NULL for latest)
+#' @param board Board to load from:
+#'   - `NULL` (default): check local first (.petrographer/models/), then hub
+#'   - `"local"`: only check locally trained models (.petrographer/models/)
+#'   - Custom board object
+#' @param device Device: "cpu", "cuda", or "mps"
+#' @param confidence Detection threshold
+#' @return PetrographyModel object
 #' @export
-get_model <- function(name, version = NULL, board = pg_board()) {
-  if (!requireNamespace("pins", quietly = TRUE)) {
-    cli::cli_abort("pins is required. Install with install.packages('pins')")
+#' @examples
+#' \dontrun{
+#' # Smart loading (checks local first, then hub)
+#' model <- from_pretrained("my_model")
+#'
+#' # Force local only
+#' model <- from_pretrained("my_model", board = "local")
+#'
+#' # Force hub only
+#' hub_board <- pins::board_url("https://flmnh-ai.github.io/petrographer/models/")
+#' model <- from_pretrained("public_model", board = hub_board)
+#' }
+from_pretrained <- function(model_id,
+                            version = NULL,
+                            board = NULL,
+                            device = "cpu",
+                            confidence = 0.5) {
+
+  # Resolve board
+  if (is.null(board)) {
+    # Smart default: check local first, then hub
+    local_board <- .get_model_board()
+
+    # Check if model exists locally
+    local_pins <- tryCatch(
+      pins::pin_list(local_board),
+      error = function(e) character(0)
+    )
+
+    if (model_id %in% local_pins) {
+      board <- local_board
+      cli::cli_alert_info("Loading from local board")
+    } else {
+      board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_models_url))
+      cli::cli_alert_info("Loading from hub")
+    }
+  } else if (identical(board, "local")) {
+    board <- .get_model_board()
+  }
+  # else: use provided board object
+
+  # Download model files
+  files <- pins::pin_download(board, model_id, version = version)
+
+  # Find model weights
+  model_path <- files[grepl("model_best\\.pth$", files)][1]
+  config_path <- files[grepl("config\\.yaml$", files)][1]
+  metadata_path <- files[grepl("metadata\\.json$", files)][1]
+
+  if (is.na(model_path)) cli::cli_abort("No model weights found for {.val {model_id}}")
+  if (is.na(config_path)) cli::cli_abort("No config found for {.val {model_id}}")
+
+  # Load category mapping from metadata.json if available
+  category_mapping <- NULL
+  if (!is.na(metadata_path) && fs::file_exists(metadata_path)) {
+    metadata_json <- jsonlite::read_json(metadata_path)
+    if (!is.null(metadata_json$thing_classes)) {
+      # Convert R list to Python dict: {0: "class1", 1: "class2", ...}
+      class_names <- unlist(metadata_json$thing_classes)
+      category_mapping <- as.list(setNames(class_names, seq_along(class_names) - 1))
+      cli::cli_alert_info("Loaded {length(category_mapping)} class names from metadata")
+    }
   }
 
-  available <- tryCatch(pins::pin_list(board), error = function(e) character())
-  if (!(name %in% available)) {
-    cli::cli_abort("Pin '{name}' not found on board. Available: {paste(available, collapse = ', ')}")
-  }
+  cli::cli_alert_success("Loading {.strong {model_id}}")
 
-  files <- if (is.null(version)) pins::pin_download(board, name) else pins::pin_download(board, name, version = version)
-  model_path <- files[grepl("model_final\\.pth$", files)]
-  config_path <- files[grepl("config\\.yaml$", files)]
-  if (!length(model_path)) cli::cli_abort("model_final.pth not found in pin '{name}'")
-  if (!length(config_path)) cli::cli_abort("config.yaml not found in pin '{name}'")
-
-  list(
-    model_path = model_path[[1]],
-    config_path = config_path[[1]],
-    pin_meta = pins::pin_meta(board, name, version = version)
+  # Load with SAHI
+  sahi <- reticulate::import("sahi")
+  sahi_model <- sahi$AutoDetectionModel$from_pretrained(
+    model_type = 'detectron2',
+    model_path = as.character(model_path),
+    config_path = as.character(config_path),
+    confidence_threshold = confidence,
+    device = device,
+    category_mapping = if (!is.null(category_mapping)) category_mapping else NULL
   )
+
+  # Wrap in PetrographyModel
+  model <- list(
+    sahi_model = sahi_model,
+    model_path = as.character(model_path),
+    config_path = as.character(config_path),
+    confidence = confidence,
+    device = device,
+    manifest = NULL
+  )
+  class(model) <- "PetrographyModel"
+  return(model)
+}
+
+#' Pin a trained model to a board
+#'
+#' Uploads model files to a pins board for versioning and sharing.
+#' Maintainers should call [pins::write_board_manifest()] after pinning
+#' to update the board manifest for board_url() consumers.
+#'
+#' @param model_dir Directory with model files
+#' @param model_id Name for the model
+#' @param board Pins board to pin to
+#' @param metadata Optional metadata list
+#' @export
+pin_model <- function(model_dir,
+                      model_id,
+                      board,
+                      metadata = list()) {
+
+  # Required files
+  required <- c("model_best.pth", "config.yaml")
+  files <- fs::path(model_dir, required)
+
+  if (!all(fs::file_exists(files))) {
+    missing <- required[!fs::file_exists(files)]
+    cli::cli_abort("Missing required files: {.val {missing}}")
+  }
+
+  # Add optional files if present
+  optional <- c("metadata.json", "metrics.json", "log.txt")
+  opt_files <- fs::path(model_dir, optional)
+  files <- c(files, opt_files[fs::file_exists(opt_files)])
+
+  # Add timestamp
+  metadata$pinned <- Sys.time()
+
+  # Upload
+  pins::pin_upload(board, files, name = model_id, metadata = metadata)
+
+  invisible(model_id)
+}
+
+#' List available models
+#'
+#' @param board Pins board (NULL = public hub, "local" = local training board)
+#' @export
+list_models <- function(board = NULL) {
+  if (is.null(board)) {
+    board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_models_url))
+  } else if (identical(board, "local")) {
+    board <- .get_model_board()
+  }
+  pins::pin_list(board)
+}
+
+#' Get model info
+#'
+#' @param model_id Model name
+#' @param board Pins board (NULL = public hub, "local" = local training board)
+#' @export
+model_info <- function(model_id, board = NULL) {
+  if (is.null(board)) {
+    board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_models_url))
+  } else if (identical(board, "local")) {
+    board <- .get_model_board()
+  }
+
+  meta <- pins::pin_meta(board, model_id)
+
+  # Nice display with cli
+  cli::cli_h2("{.strong {model_id}}")
+  cli::cli_dl(c(
+    "Created" = format(meta$created, "%Y-%m-%d %H:%M"),
+    "Files" = paste(basename(meta$file), collapse = ", "),
+    "Size" = paste0(round(sum(meta$file_size) / 1e6, 1), " MB")
+  ))
+
+  if (!is.null(meta$user)) {
+    if (!is.null(meta$user$pinned)) {
+      cli::cli_text("Pinned: {meta$user$pinned}")
+    }
+    if (!is.null(meta$user$notes)) {
+      cli::cli_text("{meta$user$notes}")
+    }
+  }
+
+  invisible(meta)
 }

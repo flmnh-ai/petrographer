@@ -1,0 +1,496 @@
+---
+title: "Training Custom Detection Models"
+format:
+  html:
+    toc: true
+execute:
+  eval: false
+  warning: false
+  message: false
+---
+
+This vignette walks through training custom object detection models for petrographic analysis. It covers both local training (accessible to all users) and HPC training (specific to University of Florida's HiPerGator, but adaptable to other SLURM-based systems).
+
+## Prerequisites
+
+Before training, ensure you have:
+
+1. **Dataset in COCO format** with train/valid splits
+2. **Python environment** with detectron2, sahi, torch installed
+3. **GPU access** (recommended) - training on CPU is slow but possible
+
+## Dataset Preparation
+
+### Validate Your Dataset
+
+Use `validate_dataset()` to check your dataset structure and COCO format:
+
+```{r validate}
+library(petrographer)
+library(dplyr)
+library(ggplot2)
+library(fs)
+
+# Validate dataset structure
+validate_dataset("data/processed/my_dataset")
+```
+
+Your dataset should have this structure:
+
+```
+my_dataset/
+├── train/
+│   ├── _annotations.coco.json
+│   └── *.jpg
+└── valid/
+    ├── _annotations.coco.json
+    └── *.jpg
+```
+
+### Optional: Dataset Slicing
+
+For large, heterogeneous image sizes, use SAHI slicing to create uniform tiles:
+
+```{r slice}
+# Slice large images into 1024x1024 tiles
+slice_dataset(
+  input_dir = "data/raw/large_images",
+  output_dir = "data/processed/my_dataset_sliced",
+  slice_size = 1024,
+  overlap = 0.2
+)
+```
+
+### Optional: Pin Your Dataset
+
+Pin datasets for versioning and easy reference:
+
+```{r pin-dataset}
+# Pin dataset to local board
+pin_dataset(
+  data_dir = "data/processed/my_dataset",
+  dataset_id = "my_dataset_v1"
+)
+
+# List pinned datasets
+list_datasets()
+```
+
+## Local Training
+
+Local training runs on your machine (CPU or GPU). This is the simplest way to train a model.
+
+### Basic Training
+
+```{r train-local}
+# Train a model locally
+model_id <- train_model(
+  data_dir = "data/processed/my_dataset",
+  model_id = "my_detector_v1",
+  num_classes = 3,           # Number of object classes
+  max_iter = 12000,          # Training iterations
+  device = "cuda"            # "cpu", "cuda", or "mps"
+)
+```
+
+The model will be automatically pinned to your local board (`.petrographer/`) with full metadata.
+
+### Key Parameters Explained
+
+**Dataset specification:**
+```{r dataset-params}
+# Option 1: Use a directory path
+train_model(data_dir = "data/processed/my_dataset", ...)
+
+# Option 2: Use a pinned dataset ID
+train_model(dataset_id = "my_dataset_v1", ...)
+```
+
+**Model architecture:**
+```{r model-params}
+# Backbone options: "resnet50" (default), "resnet101", "resnext101"
+backbone = "resnet50"
+
+# Freeze early layers for faster training (0-5)
+# Higher = more frozen = faster training, less adaptation
+freeze_at = 2  # Freeze stem + res2 (recommended)
+```
+
+**Training schedule:**
+```{r schedule-params}
+# Iterations (depends on dataset size)
+max_iter = 12000     # ~1-2 hours on modern GPU
+
+# Learning rate (NULL = auto-scaling based on batch size and freeze_at)
+learning_rate = NULL  # Let petrographer compute optimal rate
+
+# Batch size (NA = auto: 2 images per GPU)
+ims_per_batch = NA
+
+# Validation frequency
+eval_period = 1000    # Evaluate every 1000 iterations
+```
+
+### What Happens During Training
+
+1. **Dataset validation** - Checks COCO format and class consistency
+2. **Config generation** - Computes batch size, learning rate, workers
+3. **Training** - Calls Detectron2 via Python with:
+   - WarmupCosineLR schedule
+   - Differential learning rates (0.1x backbone, 1.0x head)
+   - Data augmentations (flips, rotations, color jitter)
+4. **Auto-pinning** - Saves model to `.petrographer/` with metadata
+
+## Loading and Testing Trained Models
+
+### Load a Trained Model
+
+```{r load-trained}
+# Load from local board (checks .petrographer/ first, then hub)
+model <- from_pretrained("my_detector_v1", device = "cuda")
+
+# Alternatively, force local board
+model <- from_pretrained("my_detector_v1", board = "local", device = "cuda")
+```
+
+### Test on Validation Images
+
+```{r test-model}
+# Get validation images
+val_images <- dir_ls("data/processed/my_dataset/valid", glob = "*.jpg")
+
+# Test on a single image
+results <- predict(model, val_images[1])
+
+# View detections
+results |>
+  select(image_id, category_name, confidence, area, perimeter)
+
+# Test on multiple images
+batch_results <- predict_images(
+  image_dir = "data/processed/my_dataset/valid",
+  model = model,
+  output_dir = "results/validation_test"
+)
+```
+
+## Evaluating Training Results
+
+### Parse Training Metrics
+
+```{r eval-training}
+# Load metrics from training
+eval_result <- evaluate_training(
+  model_dir = path(".petrographer", model_id, "current")
+)
+
+# Summary statistics
+eval_result$summary
+```
+
+### Plot Training Curves
+
+```{r plot-training}
+# Loss curves
+eval_result$training_data |>
+  select(iteration, contains("loss")) |>
+  tidyr::pivot_longer(-iteration, names_to = "loss_type", values_to = "loss") |>
+  filter(!is.na(loss)) |>
+  ggplot(aes(iteration, loss, color = loss_type)) +
+  geom_line() +
+  facet_wrap(~loss_type, scales = "free_y") +
+  labs(title = "Training Loss") +
+  theme_minimal()
+
+# Validation metrics
+eval_result$validation_data |>
+  tidyr::pivot_longer(-iteration, names_to = "metric", values_to = "value") |>
+  filter(!is.na(value)) |>
+  ggplot(aes(iteration, value)) +
+  geom_line() +
+  geom_point(size = 0.5) +
+  facet_wrap(~metric, scales = "free_y") +
+  labs(title = "Validation Metrics") +
+  theme_minimal()
+```
+
+### Evaluate on Validation Set
+
+```{r eval-sahi}
+# Run full COCO evaluation with SAHI
+sahi_eval <- evaluate_model_sahi(
+  model = model,
+  annotation_json = "data/processed/my_dataset/valid/_annotations.coco.json",
+  image_dir = "data/processed/my_dataset/valid",
+  use_slicing = FALSE
+)
+
+# COCO metrics
+sahi_eval$summary |>
+  filter(metric %in% c("AP", "AP50", "AP75", "AR@100"))
+```
+
+## HPC Training (Advanced)
+
+::: {.callout-note}
+This section is specific to users of **University of Florida's HiPerGator**. However, the code demonstrates patterns that can be adapted to other SLURM-based HPC systems by modifying the `hipergator` package integration.
+:::
+
+HPC training is useful for:
+- Large datasets requiring long training times
+- Multi-GPU training
+- Running multiple experiments in parallel
+
+### One-Time Setup
+
+Configure your HPC connection once per session:
+
+```{r hpc-config}
+library(hipergator)
+
+# Configure HiPerGator connection
+hpg_configure(
+  host = "hpg",
+  base_dir = "/blue/mygroup/myusername/petrographer"
+)
+```
+
+You can also set these via `.Renviron`:
+```
+PETROGRAPHER_HPC_HOST=hpg.rc.ufl.edu
+PETROGRAPHER_HPC_BASE_DIR=/blue/mygroup/myusername/petrographer
+```
+
+### Run HPC Training
+
+Training mode is auto-detected based on `hipergator` configuration. Use the **same** `train_model()` call:
+
+```{r train-hpc}
+# Same call as local training - HPC mode auto-detected!
+model_id <- train_model(
+  data_dir = "data/processed/my_dataset",
+  model_id = "my_detector_hpc_v1",
+  num_classes = 3,
+  max_iter = 12000
+  # No hpc_* params needed - uses hipergator config!
+)
+```
+
+### Resource Configuration
+
+Customize HPC resources for your job:
+
+```{r hpc-resources}
+model_id <- train_model(
+  data_dir = "data/processed/my_dataset",
+  model_id = "my_large_model",
+  num_classes = 5,
+  max_iter = 20000,
+
+  # HPC resource hints
+  gpus = 2,                    # Multi-GPU training
+  hpc_cpus_per_task = 28,      # CPUs (default: 14 per GPU)
+  hpc_mem = "48gb",            # Memory (default: 24gb per GPU)
+
+  # Batch size must be divisible by GPU count
+  ims_per_batch = 16           # 8 per GPU
+)
+```
+
+### How HPC Training Works
+
+Behind the scenes, `train_model()`:
+
+1. **Uploads artifacts** to HPC:
+   - Dataset → `base_dir/datasets/{dataset_id}/`
+   - Training script → `base_dir/scripts/train.py`
+   - Both use `rsync` - unchanged files are skipped!
+
+2. **Submits SLURM job** with:
+   - Working directory: `base_dir`
+   - Command uses relative paths (clean, portable)
+   - GPU allocation via `hipergator` resource spec
+
+3. **Monitors job** until completion
+
+4. **Downloads results**:
+   - `model_best.pth` (weights)
+   - `config.yaml` (model config)
+   - `metadata.json` (class names)
+   - `metrics.json` (training history)
+
+5. **Pins model** to local board for easy loading
+
+### Shared Directory Structure
+
+HPC uses an efficient shared structure to avoid re-uploading:
+
+```
+/blue/base_dir/
+├── datasets/
+│   └── my_dataset_v1/          # Shared across all models
+│       ├── train/
+│       └── valid/
+├── scripts/
+│   └── train.py                # Shared script
+└── models/
+    └── my_detector_hpc_v1/
+        └── 20250113120000/     # Run ID (timestamp)
+            └── output/
+                ├── model_best.pth
+                ├── config.yaml
+                └── metadata.json
+```
+
+This means:
+- First training uploads everything
+- Subsequent trainings only upload changed files
+- Multiple models can share datasets and scripts
+
+### Monitoring and Troubleshooting
+
+```{r hpc-monitor}
+# Check HPC connection
+hipergator::hpg_check_connection()
+
+# View your base directory
+hipergator::hpg_show_base_dir()
+
+# List running jobs (if you have access)
+# hipergator provides job monitoring functions
+```
+
+If training fails:
+1. Check error messages in the R console
+2. Verify `base_dir` exists on HPC
+3. Ensure dataset paths are correct
+4. Check GPU availability on your partition
+
+## Advanced Topics
+
+### Custom Learning Rates
+
+Override auto-scaling for fine control:
+
+```{r custom-lr}
+train_model(
+  data_dir = "data/processed/my_dataset",
+  model_id = "my_model",
+  num_classes = 3,
+  learning_rate = 0.0005,  # Manual LR (head rate; backbone gets 0.1x)
+  max_iter = 12000
+)
+```
+
+The default auto-scaling uses:
+- Batch size (linear scaling)
+- `freeze_at` (more frozen = higher LR)
+- Base rate: 0.001 for `freeze_at = 2`
+
+### Backbone Selection
+
+Choose a backbone based on your needs:
+
+```{r backbones}
+# ResNet50 (default) - Fast, good for most tasks
+backbone = "resnet50"
+
+# ResNet101 - Deeper, better accuracy, slower
+backbone = "resnet101"
+
+# ResNeXt101 - Best accuracy, slowest, needs more memory
+backbone = "resnext101"
+```
+
+### Freeze Strategies
+
+Control which layers to train:
+
+```{r freeze}
+# freeze_at = 0: Train entire backbone (slow, best adaptation)
+# freeze_at = 1: Freeze stem only (good balance)
+# freeze_at = 2: Freeze stem + res2 (default, faster)
+# freeze_at = 3: Freeze stem + res2 + res3
+# freeze_at = 4: Freeze stem + res2 + res3 + res4
+# freeze_at = 5: Freeze entire backbone (fastest, least adaptation)
+
+train_model(
+  ...,
+  freeze_at = 1,  # Less frozen = slower but better domain adaptation
+  learning_rate = NULL  # Auto-scale adjusts for freeze_at
+)
+```
+
+### Using Pinned Datasets
+
+Pin datasets once, reuse many times:
+
+```{r use-pinned}
+# Pin dataset
+pin_dataset("data/processed/my_dataset", "my_dataset_v1")
+
+# Train multiple models with same dataset
+train_model(dataset_id = "my_dataset_v1", model_id = "model_a", ...)
+train_model(dataset_id = "my_dataset_v1", model_id = "model_b", ...)
+```
+
+## Publishing to Hub (Maintainers)
+
+To share models with the community, maintainers can publish to the public hub:
+
+```{r publish}
+# Create hub board (maintainers only)
+hub_board <- pins::board_folder(
+  here::here("pkgdown/assets/pins"),
+  versioned = TRUE
+)
+
+# Pin model to hub
+pin_model(
+  model_dir = ".petrographer/my_detector_v1/current",
+  model_id = "my_detector_v1",
+  board = hub_board,
+  metadata = list(
+    description = "Shell detector optimized for XPL images",
+    backbone = "resnet50",
+    num_classes = 5
+  )
+)
+
+# Update manifest
+pins::write_board_manifest(hub_board)
+
+# Deploy via pkgdown
+# pkgdown::build_site()
+# git commit & push
+```
+
+See `data-raw/publish-to-hub.R` in the package source for the complete workflow.
+
+## Next Steps
+
+- **Prediction workflow:** See `vignette("whole-slide-basics")` for inference
+- **Model library:** See `vignette("model-library")` for available pretrained models
+- **Function reference:** See `?train_model`, `?from_pretrained`, `?evaluate_model_sahi`
+
+## Troubleshooting
+
+**Training fails with CUDA out of memory:**
+- Reduce `ims_per_batch` (e.g., try 4 or 2)
+- Use a smaller `backbone` (resnet50 instead of resnext101)
+- Increase `freeze_at` to train fewer parameters
+
+**Training is very slow:**
+- Ensure `device = "cuda"` (not "cpu")
+- Check GPU availability: `reticulate::py_run_string("import torch; print(torch.cuda.is_available())")`
+- Reduce `eval_period` (evaluate less frequently)
+
+**Class names not showing in predictions:**
+- Ensure your COCO JSON has a `categories` list with `name` fields
+- Check `metadata.json` was created: `list.files(".petrographer/my_model/current")`
+- The model should load `category_mapping` automatically
+
+**HPC job fails:**
+- Verify `base_dir` exists: `hipergator::hpg_show_base_dir()`
+- Check dataset paths are correct relative to `data_dir`
+- Ensure GPU partition has availability

@@ -1,0 +1,495 @@
+---
+title: "Model & Dataset Library"
+format:
+  html:
+    toc: true
+    code-fold: false
+---
+
+```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
+library(petrographer)
+library(reactable)
+library(htmltools)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(pins)
+library(here)
+
+# Connect to pkgdown asset boards (these will be served at the web URLs after deployment)
+model_board <- board_folder(here::here("pkgdown/assets/models"), versioned = TRUE)
+dataset_board <- board_folder(here::here("pkgdown/assets/datasets"), versioned = TRUE)
+
+# Get pins from both boards
+model_pins <- tryCatch(pin_list(model_board), error = function(e) character(0))
+dataset_pins <- tryCatch(pin_list(dataset_board), error = function(e) character(0))
+
+# Create a list of pins with their board type (don't store board object in tibble)
+pins_with_board <- bind_rows(
+  tibble(name = model_pins, board_type = "model"),
+  tibble(name = dataset_pins, board_type = "dataset")
+)
+```
+
+## Available Models
+
+```{r models}
+#| echo: false
+if (nrow(pins_with_board) > 0) {
+  # Get metadata for all pins
+  pins_data <- pmap_dfr(pins_with_board, function(name, board_type) {
+    # Resolve board based on type
+    board <- if (board_type == "model") {
+      model_board
+    } else {
+      dataset_board
+    }
+
+    tryCatch({
+      meta <- pins::pin_meta(board, name)
+      manifest <- meta$user
+
+      tibble(
+        id = name,
+        type = board_type,
+        created = manifest$created %||% NA_character_,
+
+        # Model-specific fields
+        backbone = manifest$backbone %||% NA_character_,
+        num_classes = manifest$num_classes %||% NA_integer_,
+        dataset_id = manifest$dataset_id %||% NA_character_,
+        freeze_at = manifest$freeze_at %||% NA_integer_,
+        max_iter = manifest$max_iter %||% NA_integer_,
+        ims_per_batch = manifest$ims_per_batch %||% NA_integer_,
+        learning_rate = manifest$learning_rate %||% NA_real_,
+        training_mins = manifest$training_duration_mins %||% NA_real_,
+        training_mode = manifest$training_mode %||% NA_character_,
+
+        # Performance metrics
+        segm_ap = if(!is.null(manifest$metrics$validation[["segm/ap"]])) {
+          round(manifest$metrics$validation[["segm/ap"]], 3)
+        } else NA_real_,
+        bbox_ap = if(!is.null(manifest$metrics$validation[["bbox/ap"]])) {
+          round(manifest$metrics$validation[["bbox/ap"]], 3)
+        } else NA_real_,
+        segm_ap50 = if(!is.null(manifest$metrics$validation[["segm/ap50"]])) {
+          round(manifest$metrics$validation[["segm/ap50"]], 3)
+        } else NA_real_,
+        segm_ap75 = if(!is.null(manifest$metrics$validation[["segm/ap75"]])) {
+          round(manifest$metrics$validation[["segm/ap75"]], 3)
+        } else NA_real_,
+
+        # Dataset-specific fields
+        description = manifest$description %||% "",
+        num_images = manifest$num_images %||% NA_integer_,
+
+        # Store full manifest for details
+        full_manifest = list(manifest)
+      )
+    }, error = function(e) {
+      # Return tibble with all columns to match structure
+      tibble(
+        id = name,
+        type = board_type,
+        created = NA_character_,
+        backbone = NA_character_,
+        num_classes = NA_integer_,
+        dataset_id = NA_character_,
+        freeze_at = NA_integer_,
+        max_iter = NA_integer_,
+        ims_per_batch = NA_integer_,
+        learning_rate = NA_real_,
+        training_mins = NA_real_,
+        training_mode = NA_character_,
+        segm_ap = NA_real_,
+        bbox_ap = NA_real_,
+        segm_ap50 = NA_real_,
+        segm_ap75 = NA_real_,
+        description = "",
+        num_images = NA_integer_,
+        full_manifest = list(NULL)
+      )
+    })
+  })
+
+  # Filter models
+  models <- pins_data %>%
+    filter(type == "model" | is.na(type))
+
+  if (nrow(models) > 0) {
+    reactable(
+      models,
+      searchable = TRUE,
+      filterable = TRUE,
+      defaultPageSize = 10,
+      defaultSorted = "segm_ap",
+      defaultSortOrder = "desc",
+      columns = list(
+        id = colDef(
+          name = "Model ID",
+          minWidth = 180,
+          cell = function(value) {
+            htmltools::code(
+              style = "background: #f5f5f5; padding: 4px 8px; border-radius: 4px; font-size: 13px;",
+              value
+            )
+          }
+        ),
+        type = colDef(show = FALSE),
+        full_manifest = colDef(show = FALSE),
+        created = colDef(show = FALSE),
+        description = colDef(show = FALSE),
+        dataset_id = colDef(show = FALSE),
+        freeze_at = colDef(show = FALSE),
+        max_iter = colDef(show = FALSE),
+        ims_per_batch = colDef(show = FALSE),
+        learning_rate = colDef(show = FALSE),
+        training_mode = colDef(show = FALSE),
+        segm_ap50 = colDef(show = FALSE),
+        segm_ap75 = colDef(show = FALSE),
+        num_images = colDef(show = FALSE),
+
+        backbone = colDef(
+          name = "Backbone",
+          minWidth = 100,
+          cell = function(value) {
+            if (is.na(value)) return("")
+            htmltools::span(style = "font-size: 13px; color: #555;", value)
+          }
+        ),
+        num_classes = colDef(
+          name = "Classes",
+          minWidth = 70,
+          align = "center",
+          cell = function(value) {
+            if (is.na(value)) return("")
+            htmltools::span(style = "font-weight: 500; color: #666;", value)
+          }
+        ),
+        segm_ap = colDef(
+          name = "Segm AP",
+          minWidth = 100,
+          align = "right",
+          cell = function(value) {
+            if (is.na(value)) return("—")
+            color <- if (value >= 50) "#28a745" else if (value >= 30) "#ffc107" else "#dc3545"
+            htmltools::span(
+              style = sprintf("font-weight: 700; font-size: 15px; color: %s;", color),
+              sprintf("%.1f%%", value)
+            )
+          }
+        ),
+        bbox_ap = colDef(
+          name = "BBox AP",
+          minWidth = 100,
+          align = "right",
+          cell = function(value) {
+            if (is.na(value)) return("—")
+            htmltools::span(
+              style = "font-weight: 500; color: #666;",
+              sprintf("%.1f%%", value)
+            )
+          }
+        ),
+        training_mins = colDef(
+          name = "Training Time",
+          minWidth = 110,
+          align = "right",
+          cell = function(value) {
+            if (is.na(value)) return("")
+            mins <- round(value)
+            if (mins < 60) {
+              htmltools::span(style = "font-size: 13px; color: #666;", sprintf("%d min", mins))
+            } else {
+              hours <- floor(mins / 60)
+              remaining_mins <- mins %% 60
+              htmltools::span(style = "font-size: 13px; color: #666;", sprintf("%dh %dm", hours, remaining_mins))
+            }
+          }
+        )
+      ),
+      details = function(index) {
+        model <- models[index, ]
+        manifest <- model$full_manifest[[1]]
+
+        # Handle NULL manifest from error handler
+        if (is.null(manifest)) {
+          return(htmltools::div(
+            style = "padding: 20px; background: #f8f9fa;",
+            htmltools::div(
+              class = "alert alert-warning",
+              "No details available for this model."
+            )
+          ))
+        }
+
+        htmltools::div(
+          style = "padding: 20px; background: #f8f9fa;",
+
+          # Quick load code at top
+          htmltools::div(
+            style = "margin-bottom: 20px; padding: 12px; background: white; border-radius: 6px; border-left: 4px solid #2c5aa0;",
+            htmltools::h5(style = "margin: 0 0 8px 0; color: #333; font-size: 14px;", "📦 Load Model"),
+            htmltools::pre(
+              style = "margin: 0; background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; position: relative;",
+              htmltools::code(
+                style = "font-size: 13px; color: #333; font-family: 'Monaco', monospace;",
+                sprintf('model <- from_pretrained("%s")\nresults <- predict(model, "image.jpg")', model$id)
+              ),
+              htmltools::tags$button(
+                onclick = sprintf("navigator.clipboard.writeText('model <- from_pretrained(\"%s\")')", model$id),
+                class = "btn btn-sm btn-outline-primary",
+                style = "position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px;",
+                "Copy"
+              )
+            )
+          ),
+
+          # Validation Metrics
+          if (!is.null(manifest$metrics$validation)) {
+            htmltools::div(
+              style = "margin-bottom: 16px;",
+              htmltools::h5(style = "margin: 0 0 10px 0; color: #333; font-size: 14px; font-weight: 600;", "📊 Validation Metrics"),
+              htmltools::div(
+                style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;",
+                lapply(names(manifest$metrics$validation), function(metric) {
+                  value <- manifest$metrics$validation[[metric]]
+                  if (is.numeric(value) && !is.na(value) && metric != "iteration") {
+                    label <- gsub("/", " ", toupper(metric))
+                    display_val <- if (grepl("ap", tolower(metric))) {
+                      sprintf("%.1f%%", value)
+                    } else {
+                      sprintf("%.3f", value)
+                    }
+
+                    htmltools::div(
+                      style = "background: white; padding: 10px; border-radius: 4px; border: 1px solid #dee2e6;",
+                      htmltools::div(style = "font-size: 11px; color: #6c757d; margin-bottom: 4px;", label),
+                      htmltools::div(style = "font-size: 16px; font-weight: 600; color: #2c5aa0;", display_val)
+                    )
+                  }
+                })
+              )
+            )
+          },
+
+          # Training Configuration
+          htmltools::div(
+            style = "margin-bottom: 16px;",
+            htmltools::h5(style = "margin: 0 0 10px 0; color: #333; font-size: 14px; font-weight: 600;", "⚙️ Training Configuration"),
+            htmltools::div(
+              style = "background: white; padding: 12px; border-radius: 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 16px; font-size: 13px;",
+              htmltools::div(htmltools::strong("Dataset: "), manifest$dataset_id %||% "—"),
+              htmltools::div(htmltools::strong("Backbone: "), manifest$backbone %||% "—"),
+              htmltools::div(htmltools::strong("Freeze At: "), manifest$freeze_at %||% "—"),
+              htmltools::div(htmltools::strong("Max Iterations: "), format(manifest$max_iter %||% 0, big.mark = ",")),
+              htmltools::div(htmltools::strong("Batch Size: "), manifest$ims_per_batch %||% "—"),
+              htmltools::div(htmltools::strong("Learning Rate: "), sprintf("%.2e", manifest$learning_rate %||% 0)),
+              htmltools::div(htmltools::strong("Training Mode: "), manifest$training_mode %||% "—"),
+              htmltools::div(htmltools::strong("Duration: "),
+                if (!is.na(model$training_mins)) {
+                  mins <- round(model$training_mins)
+                  if (mins < 60) sprintf("%d min", mins) else sprintf("%.1f hr", mins/60)
+                } else "—"
+              )
+            )
+          ),
+
+          # Metadata
+          htmltools::div(
+            htmltools::h5(style = "margin: 0 0 10px 0; color: #333; font-size: 14px; font-weight: 600;", "ℹ️ Metadata"),
+            htmltools::div(
+              style = "background: white; padding: 12px; border-radius: 4px; font-size: 13px;",
+              htmltools::div(htmltools::strong("Created: "),
+                if (!is.null(manifest$created) && !is.na(manifest$created)) {
+                  format(as.POSIXct(manifest$created), "%Y-%m-%d %H:%M")
+                } else {
+                  "—"
+                }
+              ),
+              htmltools::div(htmltools::strong("Version: "), manifest$version %||% manifest$run_id %||% "—")
+            )
+          )
+        )
+      }
+    )
+  } else {
+    htmltools::div(
+      class = "alert alert-info",
+      "No models available in the hub yet."
+    )
+  }
+} else {
+  htmltools::div(
+    class = "alert alert-warning",
+    "Unable to connect to model hub. Check your internet connection."
+  )
+}
+```
+
+## Available Datasets
+
+```{r datasets}
+#| echo: false
+if (nrow(pins_with_board) > 0 && exists("pins_data")) {
+  # Filter datasets
+  datasets <- pins_data %>%
+    filter(type == "dataset")
+
+  if (nrow(datasets) > 0) {
+    reactable(
+      datasets,
+      searchable = TRUE,
+      filterable = TRUE,
+      defaultPageSize = 10,
+      columns = list(
+        id = colDef(
+          name = "Dataset ID",
+          minWidth = 200,
+          cell = function(value) {
+            htmltools::code(
+              style = "background: #f5f5f5; padding: 4px 8px; border-radius: 4px; font-size: 13px;",
+              value
+            )
+          }
+        ),
+        type = colDef(show = FALSE),
+        full_manifest = colDef(show = FALSE),
+        backbone = colDef(show = FALSE),
+        num_classes = colDef(show = FALSE),
+        dataset_id = colDef(show = FALSE),
+        freeze_at = colDef(show = FALSE),
+        max_iter = colDef(show = FALSE),
+        ims_per_batch = colDef(show = FALSE),
+        learning_rate = colDef(show = FALSE),
+        training_mins = colDef(show = FALSE),
+        training_mode = colDef(show = FALSE),
+        segm_ap = colDef(show = FALSE),
+        bbox_ap = colDef(show = FALSE),
+        segm_ap50 = colDef(show = FALSE),
+        segm_ap75 = colDef(show = FALSE),
+
+        description = colDef(
+          name = "Description",
+          minWidth = 250
+        ),
+        num_images = colDef(
+          name = "Images",
+          minWidth = 80,
+          align = "center",
+          cell = function(value) {
+            if (is.na(value)) return("—")
+            htmltools::span(style = "font-weight: 500; color: #666;", format(value, big.mark = ","))
+          }
+        ),
+        created = colDef(
+          name = "Created",
+          minWidth = 120,
+          cell = function(value) {
+            if (is.na(value)) return("")
+            date_part <- sub("T.*", "", value)
+            htmltools::span(style = "font-size: 13px; color: #666;", date_part)
+          }
+        )
+      ),
+      details = function(index) {
+        dataset <- datasets[index, ]
+        manifest <- dataset$full_manifest[[1]]
+
+        # Handle NULL manifest from error handler
+        if (is.null(manifest)) {
+          return(htmltools::div(
+            style = "padding: 20px; background: #f8f9fa;",
+            htmltools::div(
+              class = "alert alert-warning",
+              "No details available for this dataset."
+            )
+          ))
+        }
+
+        htmltools::div(
+          style = "padding: 20px; background: #f8f9fa;",
+
+          # Usage code
+          htmltools::div(
+            style = "margin-bottom: 20px; padding: 12px; background: white; border-radius: 6px; border-left: 4px solid #28a745;",
+            htmltools::h5(style = "margin: 0 0 8px 0; color: #333; font-size: 14px;", "📦 Use Dataset"),
+            htmltools::pre(
+              style = "margin: 0; background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; position: relative;",
+              htmltools::code(
+                style = "font-size: 13px; color: #333; font-family: 'Monaco', monospace;",
+                sprintf('train_model(\n  dataset_id = "%s",\n  num_classes = %s,\n  max_iter = 2000\n)',
+                  dataset$id,
+                  manifest$num_classes %||% "?"
+                )
+              ),
+              htmltools::tags$button(
+                onclick = sprintf("navigator.clipboard.writeText('train_model(dataset_id = \"%s\", num_classes = %s, max_iter = 2000)')",
+                  dataset$id, manifest$num_classes %||% "?"),
+                class = "btn btn-sm btn-outline-success",
+                style = "position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px;",
+                "Copy"
+              )
+            )
+          ),
+
+          # Dataset Info
+          htmltools::div(
+            htmltools::h5(style = "margin: 0 0 10px 0; color: #333; font-size: 14px; font-weight: 600;", "ℹ️ Dataset Information"),
+            htmltools::div(
+              style = "background: white; padding: 12px; border-radius: 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 16px; font-size: 13px;",
+              if (!is.null(manifest$description)) htmltools::div(htmltools::strong("Description: "), manifest$description),
+              if (!is.null(manifest$num_images)) htmltools::div(htmltools::strong("Images: "), format(manifest$num_images, big.mark = ",")),
+              if (!is.null(manifest$num_classes)) htmltools::div(htmltools::strong("Classes: "), manifest$num_classes),
+              if (!is.null(manifest$created_by)) htmltools::div(htmltools::strong("Created By: "), manifest$created_by),
+              if (!is.null(manifest$created)) htmltools::div(htmltools::strong("Created: "), as.character(manifest$created))
+            )
+          )
+        )
+      }
+    )
+  } else {
+    htmltools::div(
+      class = "alert alert-info",
+      "No datasets available yet."
+    )
+  }
+}
+```
+
+## Usage
+
+All models can be loaded with a single line:
+
+```r
+library(petrographer)
+
+# Load any model from the hub
+model <- from_pretrained("model_id")
+
+# Run predictions
+results <- predict(model, "path/to/image.jpg")
+```
+
+## Contributing
+
+To publish your own trained models to this library:
+
+```r
+# Configure your board
+board <- board_user()
+
+# Publish a trained model
+publish_model(
+  model_dir = "Detectron2_Models/my_model",
+  model_id = "my_model",
+  board = board,
+  metadata = list(
+    description = "Brief description",
+    backbone = "resnet50",
+    num_classes = 5
+  )
+)
+```
+
+Contact the package maintainers to have your models added to the public hub.

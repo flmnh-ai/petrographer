@@ -37,8 +37,8 @@ val_diag <- diagnose_annotations(
 ```{r original-plots}
 # Plot annotation distribution
 bind_rows(
-  tibble(count = train_diag$annos_per_image, split = "train"),
-  tibble(count = val_diag$annos_per_image, split = "valid")
+  tibble(count = train_diag$annos_per_image_tbl$annotation_count, split = "train"),
+  tibble(count = val_diag$annos_per_image_tbl$annotation_count, split = "valid")
 ) %>%
   ggplot(aes(x = count, fill = split)) +
   geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
@@ -108,8 +108,8 @@ cat(sprintf("Annotations per image: %.1f → %.1f\n",
 ```{r sliced-plots}
 # Plot comparison
 bind_rows(
-  tibble(count = train_diag$annos_per_image, dataset = "Original"),
-  tibble(count = train_sliced_diag$annos_per_image, dataset = "Sliced")
+  tibble(count = train_diag$annos_per_image_tbl$annotation_count, dataset = "Original"),
+  tibble(count = train_sliced_diag$annos_per_image_tbl$annotation_count, dataset = "Sliced")
 ) %>%
   ggplot(aes(x = count, fill = dataset)) +
   geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
@@ -125,8 +125,8 @@ bind_rows(
 
 # Object size comparison
 bind_rows(
-  tibble(area = train_diag$bbox_areas, dataset = "Original"),
-  tibble(area = train_sliced_diag$bbox_areas, dataset = "Sliced")
+  tibble(area = train_diag$annotations$area, dataset = "Original"),
+  tibble(area = train_sliced_diag$annotations$area, dataset = "Sliced")
 ) %>%
   ggplot(aes(x = log10(area), fill = dataset)) +
   geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
@@ -143,9 +143,9 @@ bind_rows(
 
 ```{r train-sliced, eval=FALSE}
 # Train model on sliced data
-model_path <- train_model(
+model_id <- train_model(
   data_dir = sliced_dir,
-  output_name = "inclusions_sliced",
+  model_id = "inclusions_sliced",
   ims_per_batch = 12,
   num_workers = 12,
   hpc_cpus_per_task = 16,

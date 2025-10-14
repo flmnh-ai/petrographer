@@ -6,7 +6,9 @@
 \usage{
 train_model_hpc(
   data_dir,
-  output_name,
+  dataset_id,
+  model_id,
+  run_id,
   max_iter,
   learning_rate,
   num_classes,
@@ -16,15 +18,10 @@ train_model_hpc(
   checkpoint_period,
   ims_per_batch,
   num_workers,
-  hpc_env,
   hpc_cpus_per_task,
   hpc_mem,
   gpus,
-  hpc_host,
-  hpc_user,
-  hpc_base_dir,
-  local_output_dir,
-  auto_version = TRUE
+  workspace_dir
 )
 }
 \description{
