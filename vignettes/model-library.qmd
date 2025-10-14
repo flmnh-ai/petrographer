@@ -4,8 +4,6 @@ format:
   html:
     toc: true
     code-fold: false
-execute:
-  eval: false
 ---
 
 ```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
@@ -18,9 +16,9 @@ library(purrr)
 library(pins)
 library(here)
 
-# Connect to pkgdown asset boards (these will be served at the web URLs after deployment)
-model_board <- board_url('https://flmnh-ai.github.io/petrographer/models/')
-dataset_board <- board_url('https://flmnh-ai.github.io/petrographer/datasets/')
+# Connect to S3 hub boards
+model_board <- board_url('https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/models/')
+dataset_board <- board_url('https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/datasets/')
 
 # Get pins from both boards
 model_pins <- pin_list(model_board)

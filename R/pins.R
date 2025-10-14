@@ -2,9 +2,9 @@
 # Pins Integration for Model Hub
 # ============================================================================
 
-# The public model and dataset hub URLs (served via pkgdown)
-.hub_models_url <- "https://flmnh-ai.github.io/petrographer/models/"
-.hub_datasets_url <- "https://flmnh-ai.github.io/petrographer/datasets/"
+# The public model and dataset hub URLs (served via S3)
+.hub_models_url <- "https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/models/"
+.hub_datasets_url <- "https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/datasets/"
 
 # Internal: Get dataset board
 .get_dataset_board <- function() {
@@ -44,7 +44,7 @@
 #' model <- from_pretrained("my_model", board = "local")
 #'
 #' # Force hub only
-#' hub_board <- pins::board_url("https://flmnh-ai.github.io/petrographer/models/")
+#' hub_board <- pins::board_url("https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/models/")
 #' model <- from_pretrained("public_model", board = hub_board)
 #' }
 from_pretrained <- function(model_id,

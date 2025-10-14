@@ -85,8 +85,8 @@ Models are managed via the [pins](https://pins.rstudio.com/) package with automa
 ### Public Hub
 
 Hosted at:
-- Models: https://flmnh-ai.github.io/petrographer/models/
-- Datasets: https://flmnh-ai.github.io/petrographer/datasets/
+- Models: https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/models/
+- Datasets: https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/datasets/
 
 ```r
 # Download and load pretrained model
