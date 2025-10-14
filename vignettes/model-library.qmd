@@ -19,12 +19,12 @@ library(pins)
 library(here)
 
 # Connect to pkgdown asset boards (these will be served at the web URLs after deployment)
-model_board <- board_folder(here::here("pkgdown/assets/models"), versioned = TRUE)
-dataset_board <- board_folder(here::here("pkgdown/assets/datasets"), versioned = TRUE)
+model_board <- board_url('https://flmnh-ai.github.io/petrographer/models/')
+dataset_board <- board_url('https://flmnh-ai.github.io/petrographer/datasets/')
 
 # Get pins from both boards
-model_pins <- tryCatch(pin_list(model_board), error = function(e) character(0))
-dataset_pins <- tryCatch(pin_list(dataset_board), error = function(e) character(0))
+model_pins <- pin_list(model_board)
+dataset_pins <- pin_list(dataset_board)
 
 # Create a list of pins with their board type (don't store board object in tibble)
 pins_with_board <- bind_rows(
