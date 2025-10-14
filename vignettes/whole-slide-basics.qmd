@@ -6,6 +6,7 @@ format:
 execute:
   warning: false
   message: false
+  eval: false
 ---
 
 This vignette walks through a complete whole-slide inference workflow using `petrographer`. It mirrors the experience of a user who has a scanned thin section, wants to run the pretrained detector with SAHI slicing, and then review both the visual overlays and quantitative statistics.
@@ -37,7 +38,6 @@ Pretrained weights are hosted on the petrographer hub. Install (or refresh) the 
 
 ```{r load-model, eval=FALSE}
 model <- from_pretrained('inclusions_shell')
-model
 ```
 
 `pg_install_pretrained()` downloads the pin once and reuses the cache next time. The returned `PetrographyModel` retains the manifest so you can inspect provenance or training metadata as needed.
