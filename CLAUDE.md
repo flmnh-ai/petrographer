@@ -44,7 +44,7 @@ Python integration via `reticulate` - the R package manages this automatically.
 **Simplicity Over Abstraction:**
 - Fail fast with clear errors - no defensive try-catch unless truly needed
 - Delete unused code aggressively - no "future-proofing"
-- Prefer explicit over implicit (e.g., separate `from_pretrained()` vs `load_model()`)
+- Single entry point for model loading: `from_pretrained()` (smart: checks local first, then hub)
 - Minimal dependencies, focused functionality
 - Breaking changes OK - this is research code
 
@@ -61,28 +61,28 @@ The package was dramatically simplified, removing ~40% of code:
 
 ```
 User Workflow:
-1. from_pretrained("model_id") OR load_model("local/dir") → PetrographyModel
-2. predict(model, "image.jpg") → tibble with detections + morphology
+1. from_pretrained("model_id") → PetrographyModel (checks local first, then hub)
+2. predict(model, "image.jpg") → tibble with detections + morphology + class names
 3. Analysis functions (summarize_by_image, get_population_stats)
 
 Developer Workflow:
 1. validate_dataset("data_dir") → check COCO format
-2. train_model(...) → local or HPC training
-3. publish_model(...) → optional pins publishing
+2. train_model(data_dir/dataset_id, model_id, ...) → local or HPC training (auto-pins to .petrographer/)
+3. from_pretrained("model_id") → load trained model (smart: checks local first)
+4. [Optional] pin_model(..., hub_board) → publish to public hub (maintainers only)
 ```
 
 ### File Organization
 
 **R/** - All R functions (one file per concern):
-- `pins.R` - Model hub integration (download/publish via pins package)
-  - `from_pretrained()` - Load model from hub, returns PetrographyModel
-  - `publish_model()` - Publish trained model to pins board
-  - `board_user()` - Create writable board for publishing
-  - Internal helpers: `pg_coalesce`, `pg_model_iso_time`, etc.
+- `pins.R` - Core pins integration (versioning, caching, distribution)
+  - `from_pretrained(model_id, board = NULL)` - Smart loading (checks local first, then hub)
+  - `pin_model(model_dir, model_id, board)` - Pin model to board
+  - `list_models(board)`, `model_info(model_id, board)` - Query boards
+  - `.get_local_board()` - Internal: returns local training board
 
-- `model.R` - Local model loading
-  - `load_model()` - Load from directory, returns PetrographyModel
-  - `list_trained_models()` - Scan Detectron2_Models/ directory
+- `model.R` - Model utilities
+  - `list_trained_models()` - Convenience wrapper for `list_models(board = "local")`
 
 - `prediction.R` - Inference and evaluation
   - `predict()` - S3 generic for PetrographyModel
@@ -113,6 +113,7 @@ Developer Workflow:
 - Handles dataset registration, augmentations, training loop
 - Uses WarmupCosineLR schedule, differential LR (0.1x backbone, 1.0x head)
 - BestCheckpointer saves model_best.pth based on segm/AP
+- **Saves metadata.json with class names** for inference (thing_classes, num_classes, dataset info)
 - **Stable - don't modify unless training improvements needed**
 
 **inst/python/slice_dataset.py** - SAHI dataset slicing utility
@@ -122,7 +123,7 @@ Developer Workflow:
 **PetrographyModel Object:**
 ```r
 structure(list(
-  sahi_model = <SAHI AutoDetectionModel>,  # The actual detector
+  sahi_model = <SAHI AutoDetectionModel>,  # The actual detector (loaded with category_mapping)
   model_path = "path/to/weights.pth",      # Needed for predict_images
   config_path = "path/to/config.yaml",     # Needed for predict_images
   confidence = 0.5,                         # Threshold
@@ -131,7 +132,7 @@ structure(list(
 ), class = "PetrographyModel")
 ```
 
-Both `from_pretrained()` and `load_model()` return this structure.
+`from_pretrained()` returns this structure. The `sahi_model` includes `category_mapping` loaded from metadata.json, enabling class name predictions.
 The wrapper is necessary because `predict_images()` needs paths to call SAHI's batch function.
 
 **Training Config:**
@@ -140,27 +141,87 @@ R computes batch sizes, learning rates, workers, then calls Python script.
 The display/config logic is verbose but **do not simplify** - it was heavily refined.
 
 **HPC Integration:**
-Uses `hipergator` package for SLURM job submission.
-Workflow: upload data → submit job → wait → download results.
-Auto-versioning checks both local and remote directories.
+Uses `hipergator` package for SLURM job submission with rsync for efficient file transfer.
 
-### Pins Integration
+**Shared Directory Structure** (efficient, avoids re-uploading):
+```
+/blue/base_dir/
+  datasets/{dataset_id}/    # Shared across all models (rsync skips if unchanged)
+  scripts/train.py          # Shared script (rsync skips if unchanged)
+  models/{model_id}/{run_id}/output/  # Versioned training runs
+```
 
-**Purpose:** HuggingFace-like model sharing via `pins` package (optional, not required).
+**Workflow**: Upload dataset/scripts → submit job → wait → download model_best.pth, config.yaml, metadata.json → pin to local board.
 
-**Architecture:**
-- Public hub: `board_url()` pointing to hosted Dropbox _pins.yaml
-- User board: `board_folder()` in ~/Dropbox/petrographer-pins (writable)
-- Models stored as pin bundles with manifest.json metadata
+**Key Points:**
+- `run_id` (timestamp) ensures multiple training runs don't conflict
+- rsync only uploads changed files (datasets and train.py reused across runs)
+- SLURM `working_dir = base_dir` for clean relative paths
+- Downloads only essential files (model_best.pth, config.yaml, metadata.json, metrics.json, log.txt)
+
+### Pins Integration (Core Infrastructure)
+
+**Purpose:** Pins is core to the package - handles versioning, caching, and distribution.
+
+**Architecture (Transparent to Users):**
+- **Public Hub:** pkgdown-served board at `https://flmnh-ai.github.io/petrographer/pins/`
+  - Consumed via `board_url()`, served from `pkgdown/assets/pins/` in repo
+  - Updated by maintainers, auto-deployed via GitHub Pages
+- **Local Dataset Board:** `.petrographer/datasets/` in project root (auto-created)
+  - Where dataset pins are stored
+  - Users reference with `dataset_id` in `train_model()`
+- **Local Model Board:** `.petrographer/models/` in project root (auto-created)
+  - Where `train_model()` automatically pins trained models
+  - Users load with `from_pretrained(model_id, board = "local")`
+- **Custom Boards:** Advanced users can specify `board_folder("path")` for either datasets or models
+
+**Board Separation:**
+Datasets and models use separate boards to allow identical names without collision:
+```r
+pin_dataset(data_dir, dataset_id = "inclusions_shell")
+train_model(
+  dataset_id = "inclusions_shell",
+  model_id = "inclusions_shell",  # Same name OK - different boards!
+  ...
+)
+```
 
 **Key Functions:**
-- `from_pretrained(model_id)` - Download from hub, cache locally
-- `publish_model(model_dir, model_id, board)` - Upload to board
-- `list_models(board)` - List available models
-- `model_info(model_id, board)` - Show metadata
+- `from_pretrained(model_id, board = NULL)` - Load model (NULL = hub, "local" = model board)
+- `pin_model(model_dir, model_id, board)` - Pin model to board
+- `pin_dataset(data_dir, dataset_id, board)` - Pin dataset to board
+- `list_models(board)` / `list_trained_models()` - List available models
+- `list_datasets(board)` - List available datasets
+- `model_info(model_id, board)` - Show model metadata
+- `get_training_dataset(model_id, board)` - Retrieve the exact dataset version used to train a model
 
-**Simplified (2025-01):** Removed complex catalog, dataset publishing, install infrastructure.
-Keep minimal hub functionality only.
+**Internal Helpers:**
+- `.get_dataset_board()` - Returns local dataset board (not exported)
+- `.get_model_board()` - Returns local model board (not exported)
+
+**Dataset Version Tracking (Reproducibility):**
+Models automatically track the exact dataset version used for training. This ensures reproducibility and allows you to retrieve the training data later:
+```r
+# Train a model (dataset version automatically captured)
+train_model(dataset_id = "my_dataset", num_classes = 3, ...)
+
+# Later, retrieve the exact dataset version used for training
+dataset_path <- get_training_dataset("my_dataset")
+
+# Use it to retrain or analyze
+train_model(data_dir = dataset_path, model_id = "my_dataset_v2", ...)
+```
+
+The dataset version ID (e.g., `"20251013T143943Z-8329a"`) is stored in model metadata and used to retrieve the correct pins version. This works even if the dataset has been updated since training.
+
+**Maintainer Workflow (Publishing to Hub):**
+1. Pin model: `pin_model(model_dir, model_id, hub_board)`
+2. Update manifest: `pins::write_board_manifest(hub_board)`
+3. Rebuild pkgdown: `pkgdown::build_site()`
+4. Commit & push to GitHub
+5. Model appears on hub after deployment
+
+**Refactored (2025-10):** Separated datasets and models into different boards to prevent namespace collisions and allow same names for related datasets/models. Training auto-pins to local boards.
 
 ## Coding Conventions
 
@@ -194,13 +255,19 @@ if (!fs::file_exists(model_path)) {
 
 ### Loading Models
 ```r
-# From hub (downloads + caches)
+# From public hub (downloads + caches)
 model <- from_pretrained("shell_v3", device = "cpu", confidence = 0.5)
 
-# From local directory
-model <- load_model("Detectron2_Models/my_model", device = "cuda")
+# From local training board
+model <- from_pretrained("my_model", board = "local", device = "cuda")
+# OR use convenience wrapper
+model <- load_model("my_model", device = "cuda")
 
-# Both return identical PetrographyModel objects
+# From custom board
+my_board <- pins::board_folder("~/shared-models", versioned = TRUE)
+model <- from_pretrained("my_model", board = my_board)
+
+# All return identical PetrographyModel objects
 ```
 
 ### Running Predictions
@@ -220,7 +287,7 @@ results <- predict_images("input_dir/", model, output_dir = "results/")
 
 ### Training Models
 ```r
-# Local training
+# Local training (auto-pins to .petrographer/)
 train_model(
   data_dir = "data/processed/dataset",
   output_name = "my_model",
@@ -228,6 +295,9 @@ train_model(
   max_iter = 12000,
   device = "cuda"
 )
+
+# Load trained model
+model <- load_model("my_model")
 
 # HPC training (reads PETROGRAPHER_HPC_HOST, PETROGRAPHER_HPC_BASE_DIR from .Renviron)
 train_model(
@@ -238,18 +308,24 @@ train_model(
 )
 ```
 
-### Publishing Models
+### Publishing Models (Maintainers Only)
 ```r
-# After training
-publish_model(
+# Create hub board
+hub_board <- pins::board_folder(here::here("pkgdown/assets/pins"), versioned = TRUE)
+
+# Pin model to hub
+pin_model(
   model_dir = "Detectron2_Models/my_model",
   model_id = "my_model",
-  board = board_user(),
+  board = hub_board,
   metadata = list(description = "Shell detector v3")
 )
 
-# Or auto-publish during training
-train_model(..., publish_after_train = TRUE, model_board = board_user())
+# Update manifest
+pins::write_board_manifest(hub_board)
+
+# Then: pkgdown::build_site(), git commit, git push
+# See data-raw/publish-to-hub.R for complete workflow
 ```
 
 ## Testing
