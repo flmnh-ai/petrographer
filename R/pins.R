@@ -2,8 +2,9 @@
 # Pins Integration for Model Hub
 # ============================================================================
 
-# The public model hub URL (served via pkgdown)
-.hub_url <- "https://flmnh-ai.github.io/petrographer/pins/"
+# The public model and dataset hub URLs (served via pkgdown)
+.hub_models_url <- "https://flmnh-ai.github.io/petrographer/models/"
+.hub_datasets_url <- "https://flmnh-ai.github.io/petrographer/datasets/"
 
 # Internal: Get dataset board
 .get_dataset_board <- function() {
@@ -43,7 +44,7 @@
 #' model <- from_pretrained("my_model", board = "local")
 #'
 #' # Force hub only
-#' hub_board <- pins::board_url("https://flmnh-ai.github.io/petrographer/pins/")
+#' hub_board <- pins::board_url("https://flmnh-ai.github.io/petrographer/models/")
 #' model <- from_pretrained("public_model", board = hub_board)
 #' }
 from_pretrained <- function(model_id,
@@ -67,7 +68,7 @@ from_pretrained <- function(model_id,
       board <- local_board
       cli::cli_alert_info("Loading from local board")
     } else {
-      board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
+      board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_models_url))
       cli::cli_alert_info("Loading from hub")
     }
   } else if (identical(board, "local")) {
@@ -169,7 +170,7 @@ pin_model <- function(model_dir,
 #' @export
 list_models <- function(board = NULL) {
   if (is.null(board)) {
-    board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
+    board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_models_url))
   } else if (identical(board, "local")) {
     board <- .get_model_board()
   }
@@ -183,7 +184,7 @@ list_models <- function(board = NULL) {
 #' @export
 model_info <- function(model_id, board = NULL) {
   if (is.null(board)) {
-    board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_url))
+    board <- pins::board_url(Sys.getenv("PETROGRAPHER_HUB_URL", .hub_models_url))
   } else if (identical(board, "local")) {
     board <- .get_model_board()
   }

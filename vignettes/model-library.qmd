@@ -14,17 +14,11 @@ library(dplyr)
 library(tidyr)
 library(purrr)
 library(pins)
+library(here)
 
-# # Connect to the public petrographer hub (served via pkgdown)
-# hub_url <- Sys.getenv("PETROGRAPHER_HUB_URL",
-#   "https://flmnh-ai.github.io/petrographer/pins/")
-#
-# board <- board_url(hub_url)
-# all_pins <- pin_list(board)
-
-# Use local boards
-model_board <- petrographer:::.get_model_board()
-dataset_board <- petrographer:::.get_dataset_board()
+# Connect to pkgdown asset boards (these will be served at the web URLs after deployment)
+model_board <- board_folder(here::here("pkgdown/assets/models"), versioned = TRUE)
+dataset_board <- board_folder(here::here("pkgdown/assets/datasets"), versioned = TRUE)
 
 # Get pins from both boards
 model_pins <- tryCatch(pin_list(model_board), error = function(e) character(0))
@@ -471,7 +465,7 @@ All models can be loaded with a single line:
 library(petrographer)
 
 # Load any model from the hub
-model <- from_pretrained("model_id", device = "cpu")
+model <- from_pretrained("model_id")
 
 # Run predictions
 results <- predict(model, "path/to/image.jpg")

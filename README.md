@@ -1,4 +1,4 @@
-# petrographer
+# petrographer <img src="man/figures/logo.png" align="right" height="139" alt="" />
 
 <!-- badges: start -->
 [![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
@@ -17,7 +17,7 @@ For running inference with pretrained models:
 library(petrographer)
 
 # Load model from public hub
-model <- from_pretrained("shell_v3", device = "cpu", confidence = 0.5)
+model <- from_pretrained("inclusions")
 
 # Run prediction on an image
 results <- predict(model, "my_image.jpg")
@@ -84,7 +84,9 @@ Models are managed via the [pins](https://pins.rstudio.com/) package with automa
 
 ### Public Hub
 
-Hosted at https://flmnh-ai.github.io/petrographer/pins/
+Hosted at:
+- Models: https://flmnh-ai.github.io/petrographer/models/
+- Datasets: https://flmnh-ai.github.io/petrographer/datasets/
 
 ```r
 # Download and load pretrained model
