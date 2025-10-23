@@ -90,11 +90,13 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
 
   # Save visualization if requested
   if (save_visualizations) {
-    image_name <- tools::file_path_sans_ext(basename(image_path))
+    image_name <- fs::path_ext_remove(fs::path_file(image_path))
     result$export_visuals(
       export_dir = output_dir,
       file_name = paste0(image_name, "_prediction"),
       hide_conf = TRUE,
+      hide_labels = FALSE,
+      text_size = 0.5,
       rect_th = 2L
     )
   }
@@ -110,14 +112,16 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
 #' @param use_slicing Whether to use SAHI sliced inference (default: TRUE)
 #' @param slice_size Size of slices for SAHI in pixels (default: 512)
 #' @param overlap Overlap ratio between slices (default: 0.2)
-#' @param output_dir Output directory (default: 'results/batch')
+#' @param output_dir Output directory for visualizations (default: 'results/batch')
 #' @param save_visualizations Whether to save prediction visualizations (default: TRUE)
-#' @return Tibble with detection results for all images
+#' @param save_coco_json Path to save COCO format JSON (default: NULL)
+#' @return List with summary statistics (num_images, total_predictions, output paths)
 #' @export
 predict_images <- function(input_dir, model, use_slicing = TRUE,
                           slice_size = 512, overlap = 0.2,
                           output_dir = "results/batch",
-                          save_visualizations = TRUE) {
+                          save_visualizations = TRUE,
+                          save_coco_json = NULL) {
 
   # Validate inputs
   if (!fs::dir_exists(input_dir)) {
@@ -133,55 +137,106 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
     fs::dir_create(output_dir)
   }
 
-  # Use SAHI's native batch prediction - much more efficient!
-  result <- sahi$predict$predict(
-    model_type = 'detectron2',
-    model_path = model$model_path,
-    model_config_path = model$config_path,
-    model_confidence_threshold = model$confidence,
-    model_device = model$device,
-    source = input_dir,
-    no_standard_prediction = use_slicing,  # If using slicing, disable standard
-    no_sliced_prediction = !use_slicing,   # If not using slicing, disable sliced
-    slice_height = as.integer(slice_size),
-    slice_width = as.integer(slice_size),
-    overlap_height_ratio = overlap,
-    overlap_width_ratio = overlap,
-    export_pickle = FALSE,
-    export_crop = FALSE,
-    export_visuals = save_visualizations,
-    export_dir = if (save_visualizations) output_dir else NULL
-  )
+  # Get list of image files
+  image_files <- fs::dir_ls(input_dir, regexp = "\\.(jpg|jpeg|png|tif|tiff)$", ignore.case = TRUE)
 
-  # Extract all predictions from batch result
-  all_predictions <- list()
+  if (length(image_files) == 0) {
+    cli::cli_abort("No image files found in {.path {input_dir}}")
+  }
 
-  cli::cli_progress_bar("Processing predictions", total = length(result$object_prediction_list))
-  for (i in seq_along(result$object_prediction_list)) {
-    pred_result <- result$object_prediction_list[[i]]
-    image_path <- pred_result$image$file_name
+  # Import SAHI utilities
+  sahi_coco <- sahi$utils$coco
+  sahi_file <- sahi$utils$file
 
-    if (length(pred_result$object_prediction_list) > 0) {
-      # Create a temporary result object for morphology calculation
-      temp_result <- list(object_prediction_list = pred_result$object_prediction_list)
+  # Build COCO dataset
+  coco <- sahi_coco$Coco()
 
-      # Calculate morphology for this image
-      morph_data <- calculate_morphology_from_result(temp_result, image_path)
-      all_predictions[[length(all_predictions) + 1]] <- morph_data
+  # Add categories from model metadata
+  if (!is.null(model$manifest$thing_classes)) {
+    for (i in seq_along(model$manifest$thing_classes)) {
+      coco$add_category(sahi_coco$CocoCategory(
+        id = as.integer(i - 1),  # 0-indexed
+        name = model$manifest$thing_classes[[i]]
+      ))
     }
+  }
+
+  # Process each image
+  total_predictions <- 0
+  cli::cli_progress_bar("Processing images", total = length(image_files))
+
+  for (image_path in image_files) {
+    # Run SAHI prediction
+    if (use_slicing) {
+      pred_result <- sahi$predict$get_sliced_prediction(
+        image = image_path,
+        detection_model = model$sahi_model,
+        slice_height = as.integer(slice_size),
+        slice_width = as.integer(slice_size),
+        overlap_height_ratio = overlap,
+        overlap_width_ratio = overlap
+      )
+    } else {
+      pred_result <- sahi$predict$get_prediction(
+        image = image_path,
+        detection_model = model$sahi_model
+      )
+    }
+
+    # Create CocoImage
+    coco_image <- sahi_coco$CocoImage(
+      file_name = fs::path_file(image_path),
+      height = as.integer(pred_result$image$height),
+      width = as.integer(pred_result$image$width)
+    )
+
+    # Add predictions as annotations (for active learning)
+    if (length(pred_result$object_prediction_list) > 0) {
+      for (obj in pred_result$object_prediction_list) {
+        coco_image$add_annotation(sahi_coco$CocoAnnotation(
+          bbox = reticulate::py_to_r(obj$bbox$to_xywh()),
+          category_id = as.integer(obj$category$id),
+          category_name = obj$category$name
+        ))
+        total_predictions <- total_predictions + 1
+      }
+    }
+
+    # Optional visualization
+    if (save_visualizations) {
+      image_name <- fs::path_ext_remove(fs::path_file(image_path))
+      pred_result$export_visuals(
+        export_dir = output_dir,
+        file_name = paste0(image_name, "_prediction"),
+        hide_conf = TRUE,
+        hide_labels = FALSE,
+        text_size = 0.5,
+        rect_th = 2L
+      )
+    }
+
+    coco$add_image(coco_image)
     cli::cli_progress_update()
   }
   cli::cli_progress_done()
 
-  # Combine all results
-  if (length(all_predictions) > 0) {
-    combined_results <- purrr::map_dfr(all_predictions, identity) |>
-      clean_names() |>
-      enhance_results()
-    return(combined_results)
-  } else {
-    return(tibble::tibble())
+  # Export COCO JSON
+  if (!is.null(save_coco_json)) {
+    sahi_file$save_json(coco$json, save_coco_json)
+    cli::cli_alert_success("COCO JSON saved to {.path {save_coco_json}}")
   }
+
+  # Return lightweight summary
+  summary <- list(
+    num_images = length(image_files),
+    total_predictions = total_predictions,
+    coco_json_path = save_coco_json,
+    output_dir = if (save_visualizations) output_dir else NULL
+  )
+
+  cli::cli_alert_success("Processed {summary$num_images} images with {summary$total_predictions} predictions")
+
+  return(summary)
 }
 
 #' Evaluate detections with SAHI and COCO metrics
