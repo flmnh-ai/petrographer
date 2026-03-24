@@ -20,9 +20,9 @@
   pins::board_folder(path, versioned = TRUE)
 }
 
-#' Load a pretrained model
+#' Load a pretrained RF-DETR model
 #'
-#' Loads models from local training board, hub, or custom board.
+#' Loads RF-DETR models from local training board, hub, or custom board.
 #' By default, checks local models first, then falls back to the public hub.
 #'
 #' @param model_id Model name (e.g., "shell_v3")
@@ -33,7 +33,9 @@
 #'   - Custom board object
 #' @param device Device: "cpu", "cuda", or "mps"
 #' @param confidence Detection threshold
-#' @return PetrographyModel object
+#' @param resolution Input image resolution for RF-DETR (default: auto-detect from variant -
+#'   nano=384, small=512, medium=576). Must be divisible by 32.
+#' @return PetrographyModel object containing RF-DETR model
 #' @export
 #' @examples
 #' \dontrun{
@@ -51,7 +53,8 @@ from_pretrained <- function(model_id,
                             version = NULL,
                             board = NULL,
                             device = "cpu",
-                            confidence = 0.5) {
+                            confidence = 0.5,
+                            resolution = NULL) {
 
   # Resolve board
   if (is.null(board)) {
@@ -79,18 +82,15 @@ from_pretrained <- function(model_id,
   # Download model files
   files <- pins::pin_download(board, model_id, version = version)
 
-  # Find model weights
-  model_path <- files[grepl("model_best\\.pth$", files)][1]
-  config_path <- files[grepl("config\\.yaml$", files)][1]
+  # Load metadata for class names
   metadata_path <- files[grepl("metadata\\.json$", files)][1]
 
-  if (is.na(model_path)) cli::cli_abort("No model weights found for {.val {model_id}}")
-  if (is.na(config_path)) cli::cli_abort("No config found for {.val {model_id}}")
-
-  # Load category mapping from metadata.json if available
   category_mapping <- NULL
+  metadata_json <- NULL
+
   if (!is.na(metadata_path) && fs::file_exists(metadata_path)) {
     metadata_json <- jsonlite::read_json(metadata_path)
+
     if (!is.null(metadata_json$thing_classes)) {
       # Convert R list to Python dict: {0: "class1", 1: "class2", ...}
       class_names <- unlist(metadata_json$thing_classes)
@@ -101,31 +101,109 @@ from_pretrained <- function(model_id,
 
   cli::cli_alert_success("Loading {.strong {model_id}}")
 
-  # Load with SAHI
+  # Load RF-DETR model
   sahi <- reticulate::import("sahi")
-  sahi_model <- sahi$AutoDetectionModel$from_pretrained(
-    model_type = 'detectron2',
-    model_path = as.character(model_path),
-    config_path = as.character(config_path),
-    confidence_threshold = confidence,
-    device = device,
-    category_mapping = if (!is.null(category_mapping)) category_mapping else NULL
+  rfdetr <- reticulate::import("rfdetr")
+
+  # Find model weights
+  model_path <- files[grepl("checkpoint_best_total\\.pth$", files)][1]
+  if (is.na(model_path)) cli::cli_abort("No model weights found for {.val {model_id}}")
+
+  # Get model variant from metadata
+  model_variant <- metadata_json$model_variant %||% "nano"
+  is_seg <- startsWith(model_variant, "seg")
+
+  # Map variant to rfdetr class name
+  variant_to_class <- c(
+    nano = "RFDETRNano", small = "RFDETRSmall", medium = "RFDETRMedium",
+    large = "RFDETRLarge",
+    seg_preview = "RFDETRSegPreview",
+    seg_nano = "RFDETRSegNano", seg_small = "RFDETRSegSmall",
+    seg_medium = "RFDETRSegMedium", seg_large = "RFDETRSegLarge",
+    seg_xlarge = "RFDETRSegXLarge", seg_2xlarge = "RFDETRSeg2XLarge"
   )
 
-  # Wrap in PetrographyModel
-  model <- list(
-    sahi_model = sahi_model,
-    model_path = as.character(model_path),
-    config_path = as.character(config_path),
-    confidence = confidence,
-    device = device,
-    manifest = NULL
-  )
+  model_class_name <- variant_to_class[model_variant]
+  if (is.na(model_class_name) || !reticulate::py_has_attr(rfdetr, model_class_name)) {
+    cli::cli_abort("Unknown or unavailable RF-DETR variant: {.val {model_variant}}")
+  }
+
+  model_class <- rfdetr[[model_class_name]]
+
+  # Set resolution based on variant if not specified
+  if (is.null(resolution)) {
+    resolution <- switch(model_variant,
+      nano = 384L, seg_nano = 384L,
+      small = 512L, seg_small = 512L,
+      medium = 576L, seg_medium = 576L,
+      large = 640L, seg_large = 640L,
+      seg_xlarge = 704L, seg_2xlarge = 880L,
+      seg_preview = 432L,
+      512L  # fallback
+    )
+    cli::cli_alert_info("Using resolution {resolution} for {model_variant} variant")
+  }
+
+  # Load model
+  cli::cli_alert_info("Loading RF-DETR {model_variant} model...")
+
+  if (is_seg) {
+    # Segmentation models: load directly (SAHI doesn't support seg models yet)
+    # See https://github.com/obss/sahi/pull/1315
+    if (is.null(.petrographer_env$seg_warning_shown)) {
+      cli::cli_alert_warning(
+        "SAHI does not yet support RF-DETR segmentation models. Using direct inference (no slicing).
+         Large images may miss small objects. See {.url https://github.com/obss/sahi/pull/1315}"
+      )
+      .petrographer_env$seg_warning_shown <- TRUE
+    }
+    direct_model <- model_class(
+      pretrain_weights = as.character(model_path),
+      device = device
+    )
+
+    # Wrap in PetrographyModel (no SAHI wrapper)
+    model <- list(
+      direct_model = direct_model,
+      sahi_model = NULL,
+      model_path = as.character(model_path),
+      model_variant = model_variant,
+      resolution = as.integer(resolution),
+      confidence = confidence,
+      device = device,
+      is_segmentation = TRUE,
+      manifest = metadata_json
+    )
+  } else {
+    # Detection models: load via SAHI for sliced inference
+    sahi_model <- sahi$AutoDetectionModel$from_pretrained(
+      model_type = 'roboflow',
+      model = model_class,
+      model_path = as.character(model_path),
+      image_size = as.integer(resolution),
+      confidence_threshold = confidence,
+      device = device,
+      category_mapping = if (!is.null(category_mapping)) category_mapping else NULL
+    )
+
+    model <- list(
+      direct_model = NULL,
+      sahi_model = sahi_model,
+      model_path = as.character(model_path),
+      model_variant = model_variant,
+      resolution = as.integer(resolution),
+      confidence = confidence,
+      device = device,
+      is_segmentation = FALSE,
+      manifest = metadata_json
+    )
+  }
+
   class(model) <- "PetrographyModel"
   return(model)
 }
 
-#' Pin a trained model to a board
+#' Pin a trained RF-DETR model to a board
 #'
 #' Uploads model files to a pins board for versioning and sharing.
 #' Maintainers should call [pins::write_board_manifest()] after pinning
@@ -141,17 +219,18 @@ pin_model <- function(model_dir,
                       board,
                       metadata = list()) {
 
-  # Required files
-  required <- c("model_best.pth", "config.yaml")
+  # RF-DETR required files
+  required <- c("checkpoint_best_total.pth", "metadata.json")
+  optional <- c("log.txt", "metrics.json", "metrics_plot.png", "results.json")
+
   files <- fs::path(model_dir, required)
 
   if (!all(fs::file_exists(files))) {
     missing <- required[!fs::file_exists(files)]
-    cli::cli_abort("Missing required files: {.val {missing}}")
+    cli::cli_abort("Missing required model files: {.val {missing}}")
   }
 
   # Add optional files if present
-  optional <- c("metadata.json", "metrics.json", "log.txt")
   opt_files <- fs::path(model_dir, optional)
   files <- c(files, opt_files[fs::file_exists(opt_files)])
 

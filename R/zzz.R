@@ -1,5 +1,8 @@
 utils::globalVariables(c("sahi", "skimage", "align_py"))
 
+# Package-level environment for session state (e.g., one-time warnings)
+.petrographer_env <- new.env(parent = emptyenv())
+
 .onLoad <- function(libname, pkgname) {
   # Declare Python requirements (Reticulate >= 1.41) without initializing Python
   if (utils::packageVersion("reticulate") >= "1.41") {

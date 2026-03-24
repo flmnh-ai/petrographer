@@ -18,7 +18,7 @@ predict <- function(model, image_path, ...) {
 #' @export
 predict.PetrographyModel <- function(model, image_path,
                                       use_slicing = TRUE,
-                                      slice_size = 512,
+                                      slice_size = NULL,
                                       overlap = 0.2,
                                       save_visualizations = FALSE,
                                       output_dir = NULL,
@@ -27,7 +27,7 @@ predict.PetrographyModel <- function(model, image_path,
     image_path = image_path,
     model = model,
     use_slicing = use_slicing,
-    slice_size = slice_size,
+    slice_size = slice_size %||% model$resolution,
     overlap = overlap,
     save_visualizations = save_visualizations,
     output_dir = output_dir
@@ -38,14 +38,14 @@ predict.PetrographyModel <- function(model, image_path,
 #' @param image_path Path to image file
 #' @param model PetrographyModel object from from_pretrained()
 #' @param use_slicing Whether to use SAHI sliced inference (default: TRUE)
-#' @param slice_size Size of slices for SAHI in pixels (default: 512)
+#' @param slice_size Size of slices for SAHI in pixels (default: use model's resolution). Must be divisible by 56 for RF-DETR.
 #' @param overlap Overlap ratio between slices (default: 0.2)
 #' @param output_dir Output directory (auto-generated if NULL)
 #' @param save_visualizations Whether to save prediction visualization (default: TRUE)
 #' @return Tibble with detection results and morphological properties
 #' @export
 predict_image <- function(image_path, model, use_slicing = TRUE,
-                         slice_size = 512, overlap = 0.2, output_dir = NULL,
+                         slice_size = NULL, overlap = 0.2, output_dir = NULL,
                          save_visualizations = TRUE) {
 
   # Validate inputs
@@ -66,56 +66,81 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
     fs::dir_create(output_dir)
   }
 
-  # Run SAHI prediction
-  if (use_slicing) {
-    result <- sahi$predict$get_sliced_prediction(
-      image = image_path,
-      detection_model = model$sahi_model,
-      slice_height = as.integer(slice_size),
-      slice_width = as.integer(slice_size),
-      overlap_height_ratio = overlap,
-      overlap_width_ratio = overlap
-    )
+  if (model$is_segmentation) {
+    # Segmentation models: direct inference (no SAHI)
+    PIL <- reticulate::import("PIL")
+    img_pil <- PIL$Image$open(image_path)
+    detections <- model$direct_model$predict(img_pil, threshold = model$confidence)
+
+    n_det <- nrow(detections$xyxy)
+    if (n_det == 0) return(tibble::tibble())
+
+    # Save visualization via supervision
+    if (save_visualizations) {
+      sv <- reticulate::import("supervision")
+      np <- reticulate::import("numpy")
+      image_name <- tools::file_path_sans_ext(basename(image_path))
+      annotated <- img_pil$copy()
+      annotated <- sv$MaskAnnotator(opacity = 0.4)$annotate(annotated, detections)
+      annotated$save(fs::path(output_dir, paste0(image_name, "_prediction.png")))
+    }
+
+    # Extract morphology from masks
+    calculate_morphology_from_detections(detections, image_path) |>
+      clean_names() |>
+      enhance_results()
   } else {
-    result <- sahi$predict$get_prediction(
-      image = image_path,
-      detection_model = model$sahi_model
-    )
-  }
+    # Detection models: SAHI sliced inference
+    if (use_slicing) {
+      actual_slice_size <- slice_size %||% model$resolution %||% 512
 
-  # Check if any objects detected
-  if (length(result$object_prediction_list) == 0) {
-    return(tibble::tibble())
-  }
+      result <- sahi$predict$get_sliced_prediction(
+        image = image_path,
+        detection_model = model$sahi_model,
+        slice_height = as.integer(actual_slice_size),
+        slice_width = as.integer(actual_slice_size),
+        overlap_height_ratio = overlap,
+        overlap_width_ratio = overlap
+      )
+    } else {
+      result <- sahi$predict$get_prediction(
+        image = image_path,
+        detection_model = model$sahi_model
+      )
+    }
 
-  # Save visualization if requested
-  if (save_visualizations) {
-    image_name <- tools::file_path_sans_ext(basename(image_path))
-    result$export_visuals(
-      export_dir = output_dir,
-      file_name = paste0(image_name, "_prediction"),
-      hide_conf = TRUE,
-      rect_th = 2L
-    )
+    if (length(result$object_prediction_list) == 0) {
+      return(tibble::tibble())
+    }
+
+    if (save_visualizations) {
+      image_name <- tools::file_path_sans_ext(basename(image_path))
+      result$export_visuals(
+        export_dir = output_dir,
+        file_name = paste0(image_name, "_prediction"),
+        hide_conf = TRUE,
+        rect_th = 2L
+      )
+    }
+
+    calculate_morphology_from_result(result, image_path) |>
+      clean_names() |>
+      enhance_results()
   }
-  # Calculate morphological properties and return formatted tibble
-  calculate_morphology_from_result(result, image_path) |>
-    clean_names() |>
-    enhance_results()
 }
 
 #' Predict objects in multiple images (directory)
 #' @param input_dir Directory containing images
 #' @param model PetrographyModel object from from_pretrained()
 #' @param use_slicing Whether to use SAHI sliced inference (default: TRUE)
-#' @param slice_size Size of slices for SAHI in pixels (default: 512)
+#' @param slice_size Size of slices for SAHI in pixels (default: use model's resolution)
 #' @param overlap Overlap ratio between slices (default: 0.2)
 #' @param output_dir Output directory (default: 'results/batch')
 #' @param save_visualizations Whether to save prediction visualizations (default: TRUE)
 #' @return Tibble with detection results for all images
 #' @export
 predict_images <- function(input_dir, model, use_slicing = TRUE,
-                          slice_size = 512, overlap = 0.2,
+                          slice_size = NULL, overlap = 0.2,
                           output_dir = "results/batch",
                           save_visualizations = TRUE) {
 
@@ -143,8 +168,8 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
     source = input_dir,
     no_standard_prediction = use_slicing,  # If using slicing, disable standard
     no_sliced_prediction = !use_slicing,   # If not using slicing, disable sliced
-    slice_height = as.integer(slice_size),
-    slice_width = as.integer(slice_size),
+    slice_height = as.integer(slice_size %||% model$resolution %||% 512),
+    slice_width = as.integer(slice_size %||% model$resolution %||% 512),
     overlap_height_ratio = overlap,
     overlap_width_ratio = overlap,
     export_pickle = FALSE,
@@ -197,7 +222,7 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
 #'   annotation file. If `NULL`, image paths are resolved relative to the
 #'   annotation file.
 #' @param use_slicing Whether to use SAHI sliced inference (default `TRUE`).
-#' @param slice_size Slice size for SAHI inference (pixels, default 512).
+#' @param slice_size Slice size for SAHI inference (pixels, default: use model's resolution)
 #' @param overlap Overlap ratio between slices (default 0.2).
 #' @param max_images Optional maximum number of images to evaluate (useful for
 #'   smoke tests).
@@ -212,7 +237,7 @@ evaluate_model_sahi <- function(model,
                                 annotation_json,
                                 image_dir = NULL,
                                 use_slicing = TRUE,
-                                slice_size = 512,
+                                slice_size = NULL,
                                 overlap = 0.2,
                                 max_images = NULL,
                                 save_predictions = NULL,
@@ -271,8 +296,8 @@ evaluate_model_sahi <- function(model,
       pred <- sahi$predict$get_sliced_prediction(
         image = img_path,
         detection_model = model$sahi_model,
-        slice_height = as.integer(slice_size),
-        slice_width = as.integer(slice_size),
+        slice_height = as.integer(slice_size %||% model$resolution %||% 512),
+        slice_width = as.integer(slice_size %||% model$resolution %||% 512),
         overlap_height_ratio = overlap,
         overlap_width_ratio = overlap
       )
@@ -418,6 +443,7 @@ evaluate_training <- function(model_id = NULL,
 
   # Look for training metrics
   metrics_file <- fs::path(model_dir, "metrics.json")
+  results_file <- fs::path(model_dir, "results.json")
   log_file <- fs::path(model_dir, "log.txt")
 
   parsed <- list(training = tibble::tibble(), validation = tibble::tibble(), classwise = tibble::tibble())
@@ -430,6 +456,16 @@ evaluate_training <- function(model_id = NULL,
   } else if (fs::file_exists(log_file)) {
     # Could add log parsing here if needed
     warning("Only log.txt found - metrics.json preferred for analysis")
+  }
+
+  # Parse RF-DETR results.json (final evaluation metrics)
+  final_results <- NULL
+  if (fs::file_exists(results_file)) {
+    final_results <- jsonlite::read_json(results_file, simplifyVector = TRUE)
+    # Save to CSV if it's a data frame
+    if (is.data.frame(final_results) || is.list(final_results)) {
+      readr::write_csv(tibble::as_tibble(final_results), fs::path(output_dir, "final_results.csv"))
+    }
   }
 
   # Generate enhanced summary
@@ -451,6 +487,7 @@ evaluate_training <- function(model_id = NULL,
   # Add validation data if available
   if (nrow(parsed$validation) > 0) result$validation_data <- parsed$validation
   if (nrow(parsed$classwise) > 0) result$validation_classwise <- parsed$classwise
+  if (!is.null(final_results)) result$final_results <- final_results
 
   class(result) <- "training_evaluation"
 
@@ -461,6 +498,7 @@ evaluate_training <- function(model_id = NULL,
     "Segm metrics available" = if (isTRUE(summary$validation_segm_available)) "yes" else "no",
     "Classwise metrics available" = if (isTRUE(summary$classwise_available)) "yes" else "no",
     "Training records" = nrow(parsed$training),
+    "Final results available" = if (!is.null(final_results)) "yes" else "no",
     "Output directory" = output_dir
   ))
 
@@ -468,6 +506,22 @@ evaluate_training <- function(model_id = NULL,
     final_metrics <- tail(parsed$training, 1)
     if ("total_loss" %in% names(final_metrics)) {
       cli::cli_alert_info("Final training loss: {round(final_metrics$total_loss, 4)}")
+    }
+  }
+
+  # Print final results if available
+  if (!is.null(final_results)) {
+    cli::cli_h3("Final Evaluation Results")
+    if (is.list(final_results) && !is.data.frame(final_results)) {
+      # Print as key-value pairs
+      for (metric_name in names(final_results)) {
+        value <- final_results[[metric_name]]
+        if (is.numeric(value)) {
+          cli::cli_alert_info("{metric_name}: {round(value, 4)}")
+        } else {
+          cli::cli_alert_info("{metric_name}: {value}")
+        }
+      }
     }
   }
 

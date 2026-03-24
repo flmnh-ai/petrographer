@@ -49,5 +49,5 @@ Remotes:
     flmnh-ai/hipergator
 URL: https://flmnh-ai.github.io/petrographer/
 BugReports: https://github.com/flmnh-ai/petrographer/issues
-SystemRequirements: Python (>= 3.8), PyTorch, Detectron2, SAHI,
+SystemRequirements: Python (>= 3.8), PyTorch, rfdetr, SAHI, inference,
     scikit-image
