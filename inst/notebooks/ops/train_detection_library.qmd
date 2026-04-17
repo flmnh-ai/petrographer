@@ -15,7 +15,7 @@ params:
   validate_every: 2
   early_stopping_patience: 10
   confidence: 0.5
-  device: "cuda"
+  device: "cpu"
   slice_size: 640
   overlap: 0.2
   max_dets: 300
