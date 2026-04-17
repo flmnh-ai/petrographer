@@ -76,14 +76,16 @@ train_model <- function(dataset_id = NULL,
     gradient_checkpointing <- FALSE  # Disabled by default
   }
 
-  # Batch size: "auto" lets rfdetr probe GPU, integer sets explicit size, NA defaults to "auto"
+  # Batch size: "auto" lets rfdetr probe GPU, integer sets explicit size, NA
+  # defaults to "auto". When batch is explicit, accumulate to reach an effective
+  # batch of 16 (i.e. grad_accum = max(1, round(16 / batch))).
   if (is.na(batch_size) || identical(batch_size, "auto")) {
     batch_size <- "auto"
     if (is.na(grad_accum_steps)) grad_accum_steps <- 1L
     cli::cli_alert_info("Using auto batch size (rfdetr will probe GPU capacity)")
   } else {
     if (is.na(grad_accum_steps)) {
-      grad_accum_steps <- max(1, round(16 / batch_size))
+      grad_accum_steps <- max(1L, as.integer(round(16 / batch_size)))
       cli::cli_alert_info(
         "Auto-calculated grad_accum_steps = {grad_accum_steps} (effective batch size: {batch_size * grad_accum_steps})"
       )
@@ -96,6 +98,15 @@ train_model <- function(dataset_id = NULL,
   }
   if (is.null(dataset_id) && is.null(data_dir)) {
     cli::cli_abort("Must provide either {.arg dataset_id} or {.arg data_dir}")
+  }
+
+  # dataset_id flows into remote shell commands in the HPC path, so apply the
+  # same safe-alphabet check we use for model_id. pin_dataset() also validates
+  # at write time; this guards reads of pins that may have been created by
+  # other means.
+  if (!is.null(dataset_id) &&
+      !grepl("^[A-Za-z0-9._-]{1,64}$", dataset_id)) {
+    cli::cli_abort("Invalid dataset_id. Use only letters, numbers, ., _, - (max 64 chars).")
   }
 
   # Default model_id to dataset_id if not provided
@@ -117,15 +128,22 @@ train_model <- function(dataset_id = NULL,
       is_temp = FALSE
     )
   } else {
-    # Auto-pin to local board (persistent, reproducible)
+    # Auto-pin to local board (persistent, reproducible). Marked temp = TRUE
+    # in metadata so clean_temp_datasets() can garbage-collect later —
+    # otherwise these tar.gz'd dataset copies accumulate indefinitely.
     temp_id <- paste0("_temp_", format(Sys.time(), "%Y%m%d_%H%M%S"))
-    cli::cli_alert_info("Auto-pinning dataset as {.val {temp_id}} (will persist in .petrographer/datasets/)")
-    pin_dataset(data_dir, temp_id, board = .get_dataset_board())
+    cli::cli_alert_info("Auto-pinning dataset as {.val {temp_id}} (temp; clean with {.fn clean_temp_datasets})")
+    pin_dataset(
+      data_dir,
+      temp_id,
+      board = .get_dataset_board(),
+      metadata = list(temp = TRUE)
+    )
     list(
       id = temp_id,
       path = get_dataset_path(temp_id, board = "local"),
       board = .get_dataset_board(),
-      is_temp = FALSE
+      is_temp = TRUE
     )
   }
 
@@ -236,6 +254,30 @@ prepare_training_config <- function(data_dir,
   # Resolve batch size
   effective_batch_size <- resolve_batch_size(batch_size)
 
+  # Normalize grad_accum_steps. train_model() does this upstream, but callers
+  # that hit prepare_training_config() directly (e.g. the ops notebooks) can
+  # still pass NA — in that case NA would propagate as the string "NA" onto
+  # the Python argv and argparse would reject it. Formula matches train_model():
+  # target effective batch = 16.
+  if (is.na(grad_accum_steps)) {
+    grad_accum_steps <- if (identical(effective_batch_size, "auto")) {
+      1L
+    } else {
+      max(1L, as.integer(round(16 / effective_batch_size)))
+    }
+  }
+  grad_accum_steps <- as.integer(grad_accum_steps)
+
+  # use_amp / gradient_checkpointing defaults. Same story as grad_accum_steps:
+  # train_model() defaults NULL, but a direct caller passing NULL would hit
+  # `if (NULL)` in train_model_local() and get "argument is of length zero".
+  if (is.null(use_amp)) {
+    use_amp <- identical(device, "cuda")
+  }
+  if (is.null(gradient_checkpointing)) {
+    gradient_checkpointing <- FALSE
+  }
+
   # Check image sizes and provide batch size recommendations
   if (training_mode == "hpc" || (training_mode == "local" && device == "cuda")) {
     check_batch_size_for_images(data_dir, effective_batch_size, use_amp, gradient_checkpointing)
@@ -302,6 +344,11 @@ resolve_batch_size <- function(batch_size) {
 }
 
 check_batch_size_for_images <- function(data_dir, batch_size, use_amp, gradient_checkpointing) {
+  # "auto" lets rfdetr probe GPU capacity at runtime; we have no fixed number
+  # to compare against, and string-vs-int coercion in `batch_size > N` below
+  # would always trigger a spurious warning ("auto" > "4" is TRUE lexically).
+  if (identical(batch_size, "auto")) return(invisible(NULL))
+
   # Sample a few images from training set to detect typical image size
   train_dir <- fs::path(data_dir, "train")
 
@@ -901,7 +948,7 @@ hpc_download_results <- function(setup) {
   local_download_dir <- setup$local$download_dir
   fs::dir_create(local_download_dir)
 
-  # Download essential files
+  # Essential files — needed to build a usable pin afterwards.
   required_files <- c("checkpoint_best_total.pth", "metadata.json")
   # Optional files grouped by RF-DETR era - any one complete set is fine.
   # PTL set is produced by RF-DETR >= 1.6.0 (PyTorch Lightning CSVLogger).
@@ -910,33 +957,28 @@ hpc_download_results <- function(setup) {
   optional_native <- c("log.txt", "metrics_plot.png", "results.json")
   optional_files  <- c(optional_ptl, optional_native)
 
-  # Download required files (fail if missing)
-  for (file in required_files) {
+  # Try everything in one pass so that if a run failed before writing the
+  # required checkpoint, we still pull down log.txt / metrics.csv locally for
+  # diagnosis. Previously we aborted on the first missing required file and
+  # the user had to SSH in to see what actually went wrong.
+  try_download <- function(file) {
     remote_file <- fs::path(setup$remote$output, file)
     local_file <- fs::path(local_download_dir, file)
-
     tryCatch({
-      hipergator::hpg_download(setup$target, remote_file, local_file, quiet = TRUE)
-    }, error = function(e) {
-      cli::cli_abort("Failed to download required file {.path {file}}: {e$message}")
-    })
-  }
-
-  # Download optional files silently, then report once at the end.
-  got <- character(0)
-  for (file in optional_files) {
-    remote_file <- fs::path(setup$remote$output, file)
-    local_file <- fs::path(local_download_dir, file)
-
-    ok <- tryCatch({
       hipergator::hpg_download(setup$target, remote_file, local_file, quiet = TRUE)
       TRUE
     }, error = function(e) FALSE)
-    if (ok) got <- c(got, file)
   }
 
-  got_ptl    <- intersect(optional_ptl, got)
-  got_native <- intersect(optional_native, got)
+  got_optional <- character(0)
+  for (file in c(optional_files, required_files)) {
+    ok <- try_download(file)
+    if (ok && file %in% optional_files) got_optional <- c(got_optional, file)
+  }
+
+  # Report which metrics artifacts (if any) came back.
+  got_ptl    <- intersect(optional_ptl, got_optional)
+  got_native <- intersect(optional_native, got_optional)
   if (length(got_ptl) > 0L) {
     cli::cli_alert_info("Metrics artifacts (PTL): {.file {got_ptl}}")
   } else if (length(got_native) > 0L) {
@@ -947,11 +989,18 @@ hpc_download_results <- function(setup) {
     )
   }
 
-  # Verify required files
-  required_files <- c("checkpoint_best_total.pth", "metadata.json")
+  # Only now fail hard on missing required files — and point at anything we
+  # did pull so the user knows where to look.
   missing <- required_files[!fs::file_exists(fs::path(local_download_dir, required_files))]
   if (length(missing) > 0) {
-    cli::cli_abort("Required files missing after download: {paste(missing, collapse = ', ')}")
+    diagnostic_files <- intersect(got_optional, c("log.txt", "metrics.csv", "results.json"))
+    cli::cli_abort(c(
+      "Required training outputs missing from {.path {setup$remote$output}}: {.val {missing}}",
+      "i" = if (length(diagnostic_files) > 0)
+        "Downloaded for diagnosis: {.file {fs::path(local_download_dir, diagnostic_files)}}"
+      else
+        "No diagnostic artifacts were available either - the job may have failed before producing any output."
+    ))
   }
 
   local_download_dir

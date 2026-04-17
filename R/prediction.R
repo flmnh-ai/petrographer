@@ -4,19 +4,23 @@
 
 #' Predict objects in an image
 #'
-#' S3 generic for running predictions with a PetrographyModel.
+#' S3 method for [stats::predict()] that runs inference on an image with a
+#' `PetrographyModel`. Delegates to [predict_image()].
 #'
-#' @param model A PetrographyModel object
-#' @param image_path Path to image file
-#' @param ... Additional arguments passed to methods
-#' @return Tibble with detection results
+#' @param object A `PetrographyModel` from [from_pretrained()]. (Named
+#'   `object` rather than `model` to match the `stats::predict` generic.)
+#' @param image_path Path to image file.
+#' @param use_slicing Whether to use SAHI sliced inference (default `TRUE`).
+#' @param slice_size Slice size in pixels (default: model's resolution).
+#' @param overlap Overlap ratio between slices (default `0.2`).
+#' @param save_visualizations Whether to save prediction visualization.
+#' @param output_dir Output directory (auto-generated if `NULL`).
+#' @param ... Unused; present for generic compatibility.
+#' @return Tibble with detection results.
+#' @importFrom stats predict
+#' @method predict PetrographyModel
 #' @export
-predict <- function(model, image_path, ...) {
-  UseMethod("predict")
-}
-
-#' @export
-predict.PetrographyModel <- function(model, image_path,
+predict.PetrographyModel <- function(object, image_path,
                                       use_slicing = TRUE,
                                       slice_size = NULL,
                                       overlap = 0.2,
@@ -25,9 +29,9 @@ predict.PetrographyModel <- function(model, image_path,
                                       ...) {
   predict_image(
     image_path = image_path,
-    model = model,
+    model = object,
     use_slicing = use_slicing,
-    slice_size = slice_size %||% model$resolution,
+    slice_size = slice_size %||% object$resolution,
     overlap = overlap,
     save_visualizations = save_visualizations,
     output_dir = output_dir
@@ -198,6 +202,12 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
   # Per-image inference via predict_image(), which handles both the SAHI
   # detection path and the direct segmentation path and writes per-image
   # visualizations into output_dir.
+  #
+  # TODO(perf): `all_results[[length(all_results) + 1]] <- res` copies the
+  # whole list on each append — O(n^2) for large directories. Preallocate
+  # `vector("list", length(image_files))` and drop empty slots at the end, or
+  # use `purrr::map()` + `compact()`. Only matters at scale (hundreds of
+  # images); the loop is fine at typical thin-section volumes.
   all_results <- list()
   cli::cli_progress_bar("Running predictions", total = length(image_files))
   for (img_path in image_files) {

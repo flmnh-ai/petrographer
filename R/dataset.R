@@ -510,6 +510,13 @@ slice_dataset <- function(input_dir,
 #' @param metadata Optional metadata list
 #' @export
 pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
+  # dataset_id is interpolated into filenames and (for HPC training) remote
+  # shell commands, so restrict it to the same safe alphabet we use for
+  # model_id.
+  if (!grepl("^[A-Za-z0-9._-]{1,64}$", dataset_id)) {
+    cli::cli_abort("Invalid dataset_id. Use only letters, numbers, ., _, - (max 64 chars).")
+  }
+
   data_dir <- .resolve_data_dir(data_dir)
 
   # Validate dataset structure FIRST and capture statistics
@@ -587,6 +594,57 @@ list_datasets <- function(board = "local") {
   # Filter for dataset pins (could use naming convention if needed)
   # For now, return all pins - user can inspect with pin_meta()
   all_pins
+}
+
+#' Delete auto-pinned temp datasets
+#'
+#' When [train_model()] is called with `data_dir` rather than `dataset_id`, it
+#' auto-pins the dataset as `_temp_<timestamp>` (tagged `temp = TRUE` in
+#' metadata) so training is reproducible. Those pins persist in
+#' `.petrographer/datasets/` and accumulate over time — each is a tar.gz of
+#' the full dataset. This helper removes them.
+#'
+#' @param board Pins board (`NULL`/`"local"` = local dataset board).
+#' @param confirm If `TRUE`, prompt before deleting. Defaults to `TRUE` in
+#'   interactive sessions, `FALSE` otherwise (e.g. scripted cleanup).
+#' @return Character vector of deleted dataset ids (invisibly).
+#' @export
+clean_temp_datasets <- function(board = NULL, confirm = interactive()) {
+  if (is.null(board) || identical(board, "local")) {
+    board <- .get_dataset_board()
+  }
+
+  all_pins <- pins::pin_list(board)
+  temp_pins <- character(0)
+  for (id in all_pins) {
+    meta <- tryCatch(pins::pin_meta(board, id), error = function(e) NULL)
+    if (!is.null(meta) && isTRUE(meta$user$temp)) {
+      temp_pins <- c(temp_pins, id)
+    }
+  }
+
+  if (length(temp_pins) == 0) {
+    cli::cli_alert_info("No temp datasets to clean")
+    return(invisible(character(0)))
+  }
+
+  cli::cli_alert_info(
+    "Found {length(temp_pins)} temp dataset{?s}: {.val {temp_pins}}"
+  )
+
+  if (isTRUE(confirm)) {
+    answer <- utils::askYesNo("Delete them?", default = FALSE)
+    if (!isTRUE(answer)) {
+      cli::cli_alert_info("Cancelled")
+      return(invisible(character(0)))
+    }
+  }
+
+  for (id in temp_pins) {
+    pins::pin_delete(board, id)
+  }
+  cli::cli_alert_success("Deleted {length(temp_pins)} temp dataset{?s}")
+  invisible(temp_pins)
 }
 
 #' Get path to pinned dataset
