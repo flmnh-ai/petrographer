@@ -47,26 +47,35 @@ calculate_morphology_from_result <- function(result, image_path) {
       next
     }
 
-    # Calculate morphology from mask
+    # Calculate morphology from mask.
+    # skimage `regionprops` returns centroid as (row, col) = (y, x); the seg
+    # path in calculate_morphology_from_detections() follows that convention,
+    # so we do too here. Previously these two paths disagreed and downstream
+    # tables had x/y swapped depending on which produced the row.
+    # Guard against perimeter == 0 (tiny masks) to avoid Inf circularity, and
+    # cap circularity at 1.0 — numerical rounding on small regions can push
+    # the ratio slightly above 1.
     labeled_mask <- skimage$measure$label(mask)
     storage.mode(labeled_mask) <- 'integer'
     props <- skimage$measure$regionprops(labeled_mask)
     if (length(props) == 0) stop("scikit-image could not extract region properties from mask")
     prop <- props[[1]]
+    perim <- as.numeric(prop$perimeter)
+    area  <- as.numeric(prop$area)
     morphology_list[[i]] <- list(
       class_id = pred$category$id,
       class_name = pred$category$name,
       confidence = pred$score$value,
-      area = prop$area,
-      perimeter = prop$perimeter,
-      centroid_x = prop$centroid[[1]],
-      centroid_y = prop$centroid[[2]],
+      area = area,
+      perimeter = perim,
+      centroid_x = as.numeric(prop$centroid[[2]]),
+      centroid_y = as.numeric(prop$centroid[[1]]),
       eccentricity = prop$eccentricity,
       orientation = prop$orientation,
       major_axis_length = prop$major_axis_length,
       minor_axis_length = prop$minor_axis_length,
-      circularity = (4 * pi * prop$area) / (prop$perimeter^2),
-      aspect_ratio = prop$major_axis_length / prop$minor_axis_length,
+      circularity = if (perim > 0) min((4 * pi * area) / (perim^2), 1.0) else NA_real_,
+      aspect_ratio = if (prop$minor_axis_length > 0) as.numeric(prop$major_axis_length) / as.numeric(prop$minor_axis_length) else NA_real_,
       solidity = prop$solidity,
       extent = prop$extent
     )
