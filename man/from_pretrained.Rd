@@ -2,14 +2,15 @@
 % Please edit documentation in R/pins.R
 \name{from_pretrained}
 \alias{from_pretrained}
-\title{Load a pretrained model}
+\title{Load a pretrained RF-DETR model}
 \usage{
 from_pretrained(
   model_id,
   version = NULL,
   board = NULL,
   device = "cpu",
-  confidence = 0.5
+  confidence = 0.5,
+  resolution = NULL
 )
 }
 \arguments{
@@ -27,12 +28,23 @@ from_pretrained(
 \item{device}{Device: "cpu", "cuda", or "mps"}
 
 \item{confidence}{Detection threshold}
+
+\item{resolution}{Input image resolution for RF-DETR (default: auto-detect
+from variant). Defaults by variant:
+\itemize{
+\item Detection (patch_size=16, divisible by 32):
+nano=384, small=512, medium=576, large=704
+\item Segmentation (patch_size=12, divisible by 12):
+seg_nano=312, seg_small=384, seg_medium=432, seg_large=504,
+seg_xlarge=624, seg_2xlarge=768, seg_preview=432
+}
+Override only if you know your dataset wants a different input size.}
 }
 \value{
-PetrographyModel object
+PetrographyModel object containing RF-DETR model
 }
 \description{
-Loads models from local training board, hub, or custom board.
+Loads RF-DETR models from local training board, hub, or custom board.
 By default, checks local models first, then falls back to the public hub.
 }
 \examples{
@@ -44,7 +56,7 @@ model <- from_pretrained("my_model")
 model <- from_pretrained("my_model", board = "local")
 
 # Force hub only
-hub_board <- pins::board_url("https://flmnh-ai.github.io/petrographer/pins/")
+hub_board <- pins::board_url("https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/models/")
 model <- from_pretrained("public_model", board = hub_board)
 }
 }

@@ -1,0 +1,166 @@
+---
+title: "Load and Publish Models with Pins"
+author: "petrographer team"
+format:
+  html:
+    toc: true
+    code-fold: true
+editor: visual
+---
+
+This notebook covers two related workflows:
+
+- loading an existing model from the local board or public hub
+- publishing a completed local model pin to another board as a maintainer
+
+The package now treats `manifest.json` and `training_summary.json` as the
+stable model contract. Those files travel with each pin alongside the model
+weights and any upstream RF-DETR artifacts.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(petrographer)
+library(fs)
+library(here)
+library(jsonlite)
+
+if (requireNamespace("pins", quietly = TRUE)) {
+  library(pins)
+}
+```
+
+## Local and Hub Loading
+
+`from_pretrained()` checks the local model board first and then falls back to
+the public hub when `board = NULL`.
+
+```{r list-local}
+list_trained_models()
+```
+
+```{r load-local, eval=FALSE}
+model <- from_pretrained(
+  model_id = "inclusions_small",
+  board = "local",
+  device = "cpu",
+  confidence = 0.5
+)
+
+model
+```
+
+If you omit `board = "local"`, the package uses its normal smart resolution:
+local first, then hub.
+
+```{r load-smart, eval=FALSE}
+model <- from_pretrained("inclusions_small", device = "cpu")
+```
+
+## Inspect the Loaded Contract
+
+The returned `PetrographyModel` keeps the parsed manifest and training summary
+on the R side, so you can inspect provenance without digging through raw files.
+
+```{r inspect-model, eval=FALSE}
+names(model$manifest)
+model$manifest$model
+model$manifest$categories
+model$training_summary$training
+```
+
+For quick pin metadata, `model_info()` reads the pin metadata recorded on the
+board itself.
+
+```{r model-info, eval=FALSE}
+model_info("inclusions_small", board = "local")
+```
+
+## Look at the Files Behind a Pin
+
+If you want to inspect the downloaded files directly, use `pin_download()`.
+
+```{r inspect-files, eval=FALSE}
+local_board <- pins::board_folder(here(".petrographer/models"), versioned = TRUE)
+files <- pins::pin_download(local_board, "inclusions_small")
+basename(files)
+```
+
+```{r inspect-json, eval=FALSE}
+manifest_path <- files[grepl("manifest\\.json$", files)][1]
+summary_path <- files[grepl("training_summary\\.json$", files)][1]
+
+manifest <- jsonlite::read_json(manifest_path)
+training_summary <- jsonlite::read_json(summary_path)
+
+manifest$model
+training_summary$final_metrics
+```
+
+## Publish a Local Model to Another Board
+
+`train_model()` already pins successful runs to the local board. Maintainers
+only need `pin_model()` when copying a finished local model to a shared board
+such as the public hub.
+
+Start by finding the local pin contents:
+
+```{r locate-local-pin, eval=FALSE}
+local_board <- pins::board_folder(here(".petrographer/models"), versioned = TRUE)
+files <- pins::pin_download(local_board, "inclusions_small")
+model_dir <- fs::path_dir(files[[1]])
+model_dir
+```
+
+Then define the destination board. For a folder board:
+
+```{r destination-board, eval=FALSE}
+shared_board <- pins::board_folder("~/shared/petrographer-models", versioned = TRUE)
+```
+
+Or for a hosted/static board URL:
+
+```{r hub-board, eval=FALSE}
+hub_board <- pins::board_url("https://example.com/petrographer/models/")
+```
+
+Publish the model directory:
+
+```{r publish, eval=FALSE}
+pin_model(
+  model_dir = model_dir,
+  model_id = "inclusions_small",
+  board = shared_board,
+  metadata = list(
+    notes = "Published from model_from_pretrained.qmd"
+  )
+)
+```
+
+For `board_url()` consumers, maintainers should also refresh the board
+manifest after publishing:
+
+```{r board-manifest, eval=FALSE}
+pins::write_board_manifest(shared_board)
+```
+
+## Refreshing and Reusing Cached Files
+
+Repeated calls to `from_pretrained()` reuse the files downloaded by
+`pins::pin_download()`. To inspect versions or clear a cached pin from a local
+folder board:
+
+```{r versions, eval=FALSE}
+pins::pin_versions(local_board, "inclusions_small")
+```
+
+```{r delete-local, eval=FALSE}
+# Use carefully: deletes the local pin from this board.
+pins::pin_delete(local_board, "inclusions_small")
+```
+
+## Next Steps
+
+- Use `list_trained_models()` to browse local runs
+- Use `from_pretrained()` to load a model from local storage or the public hub
+- Inspect `model$manifest` and `model$training_summary` for provenance
+- Maintainers can republish local pins with `pin_model()` and refresh the
+  destination board manifest with `pins::write_board_manifest()`

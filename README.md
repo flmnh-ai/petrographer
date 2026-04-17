@@ -5,7 +5,7 @@
 [![R-CMD-check](https://github.com/flmnh-ai/petrographer/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/flmnh-ai/petrographer/actions/workflows/R-CMD-check.yaml)
 <!-- badges: end -->
 
-> HuggingFace-like interface for petrographic thin section analysis with Detectron2 and SAHI
+> HuggingFace-like interface for petrographic thin section analysis with RF-DETR and SAHI
 
 Automated instance segmentation and morphological analysis of petrographic thin sections using state-of-the-art computer vision models. Provides a clean, modern workflow for both researchers running inference with pretrained models and developers training custom models.
 
@@ -34,18 +34,22 @@ For training custom models:
 ```r
 library(petrographer)
 
-# Validate dataset structure
+# Validate dataset structure + pin it
 validate_dataset("data/processed/my_dataset")
+pin_dataset("data/processed/my_dataset", dataset_id = "my_dataset")
 
-# Train model (automatically saves to .petrographer/)
+# Train model (automatically pins to .petrographer/)
 train_model(
-  data_dir = "data/processed/my_dataset",
-  output_name = "my_model",
-  num_classes = 5
+  dataset_id    = "my_dataset",
+  model_id      = "my_model",
+  model_variant = "small",   # nano | small | medium | large
+  epochs        = 50,
+  batch_size    = 4,
+  device        = "cuda"     # or "cpu", "mps"
 )
 
 # Load your trained model
-model <- load_model("my_model")
+model <- from_pretrained("my_model", board = "local")
 results <- predict(model, "test_image.jpg")
 ```
 
@@ -73,7 +77,7 @@ remotes::install_github("flmnh-ai/petrographer")
 ### Prerequisites
 
 - **R 4.1+**
-- **Python 3.8+** with detectron2, sahi, torch, torchvision, opencv-python, scikit-image
+- **Python 3.8+** with rfdetr, sahi, torch, torchvision, opencv-python, scikit-image
 - **GPU recommended** for training (CPU works fine for inference)
 
 Python dependencies are managed automatically via `reticulate`. The package will guide you through setup on first use.
@@ -107,10 +111,7 @@ Automatically created at `.petrographer/` in your project when training models:
 # List your locally trained models
 list_trained_models()
 
-# Load a local model (convenience wrapper)
-model <- load_model("my_model")
-
-# Or explicitly specify local board
+# Load a local model
 model <- from_pretrained("my_model", board = "local")
 ```
 
@@ -128,33 +129,33 @@ model <- from_pretrained("model_id", board = my_board)
 ### Local Training
 
 ```r
+pin_dataset("data/processed/shell_dataset", dataset_id = "shell_dataset")
+
 train_model(
-  data_dir = "data/processed/shell_dataset",
-  output_name = "shell_detector_v4",
-  num_classes = 5,
-  max_iter = 2000,      # default for fine-tuning
-  freeze_at = 2,        # freeze stem + res2 (default)
-  backbone = "resnet50", # resnet50, resnet101, resnext101
-  device = "cuda"        # or "cpu", "mps"
+  dataset_id    = "shell_dataset",
+  model_id      = "shell_detector_v4",
+  model_variant = "small",   # nano | small | medium | large | xlarge | 2xlarge | preview
+  epochs        = 50,
+  batch_size    = 4,         # grad_accum auto-calculated for effective batch 16
+  device        = "cuda"     # or "cpu", "mps"
 )
 ```
 
 ### Training Configuration
 
-Default parameters optimized for fine-tuning:
+Key parameters:
 
-- `max_iter = 2000` - Training iterations
-- `ims_per_batch = NA` - Auto-resolves to 2 images per GPU
-- `freeze_at = 2` - Freeze backbone stem + res2 layers
-- `learning_rate = 0.00025` - Base LR (auto-scaled by batch size and freeze_at)
-- `backbone = "resnet50"` - Options: resnet50, resnet101, resnext101, or any Detectron2 model zoo key
+- `model_variant` - RF-DETR size; pick one of `nano | small | medium | large | xlarge | 2xlarge | preview`
+- `epochs` - Training length (e.g. 40-100 for fine-tuning)
+- `batch_size` - Per-GPU batch size; `grad_accum_steps` auto-calculated so `batch_size × grad_accum_steps = 16`
+- `learning_rate` - Optional override (RF-DETR defaults are sensible)
+- `device` - `cuda`, `mps`, or `cpu`
 
 The package automatically:
 - Validates dataset structure
-- Computes optimal batch sizes and learning rates
-- Handles version conflicts
-- Saves model to `.petrographer/models/` with full metadata
-- Creates training manifests with validation metrics
+- Infers `num_classes` from COCO annotations
+- Auto-pins trained model to `.petrographer/models/` with full metadata
+- Captures the exact dataset version used for reproducibility
 
 ### Dataset Preparation
 
@@ -219,8 +220,8 @@ results <- predict_images(
 ### Model Evaluation
 
 ```r
-# Evaluate training metrics
-evaluate_training("Detectron2_Models/my_model")
+# Evaluate training metrics (reads metrics.csv / log.txt from the pin)
+evaluate_training("my_model")
 
 # Evaluate on COCO dataset
 metrics <- evaluate_model_sahi(
@@ -250,7 +251,6 @@ pop_stats <- get_population_stats(results)
 ### Model Management
 
 - `from_pretrained()` - Load model from hub, local board, or custom board
-- `load_model()` - Convenience wrapper for locally trained models
 - `list_models()` / `list_trained_models()` - List available models
 - `model_info()` - Show model metadata and validation metrics
 - `pin_model()` - Publish model to board (maintainers only)
@@ -264,8 +264,7 @@ pop_stats <- get_population_stats(results)
 ### Training
 
 - `train_model()` - Unified training interface (local or HPC)
-- `evaluate_training()` - Parse and visualize training metrics
-- `prepare_training_config()` - Validate training parameters
+- `evaluate_training()` - Parse training metrics (metrics.csv / log.txt)
 
 ### Prediction
 
@@ -303,12 +302,17 @@ Restart R for changes to take effect.
 ### HPC Training
 
 ```r
-# Triggers HPC mode automatically when hpc_user is provided
-model_dir <- train_model(
-  data_dir = "data/processed/my_dataset",
-  output_name = "my_model",
-  num_classes = 5,
-  hpc_user = "youruser"
+# Configure HPC (only needed once per session)
+hipergator::hpg_configure(host = "hpg", base_dir = "/blue/yourlab/youruser")
+
+# Train on HPC by passing time_hours (triggers SLURM submission)
+model_id <- train_model(
+  dataset_id    = "my_dataset",
+  model_id      = "my_model",
+  model_variant = "small",
+  epochs        = 50,
+  batch_size    = 4,
+  time_hours    = 8          # HPC dispatch when set
 )
 ```
 
@@ -381,9 +385,9 @@ Optional configuration:
 
 ### Training Issues
 
-- **CUDA out of memory**: Reduce `ims_per_batch` (try 1-2) or use smaller images
-- **Slow training**: Check GPU utilization, consider different backbone
-- **Poor convergence**: Increase `max_iter` or adjust `learning_rate`
+- **CUDA out of memory**: Reduce `batch_size` (1-2) — `grad_accum_steps` auto-compensates
+- **Slow training**: Check GPU utilization, or switch to a smaller `model_variant`
+- **Poor convergence**: Increase `epochs` or adjust `learning_rate`
 
 ### Detection Issues
 
@@ -417,7 +421,7 @@ petrographer/
 │   └── summary.R                 # Analysis and aggregation
 ├── inst/
 │   ├── python/
-│   │   ├── train.py              # Detectron2 training script
+│   │   ├── train.py              # RF-DETR training script
 │   │   └── slice_dataset.py      # SAHI dataset slicing utility
 │   └── notebooks/                # Example workflows
 ├── vignettes/                    # Package documentation
@@ -434,15 +438,14 @@ petrographer/
 
 ### For Dense Small Objects (200+ per image)
 
-- Keep `ROI_HEADS.BATCH_SIZE_PER_IMAGE = 512` (default)
 - Use SAHI slicing with `slice_size = 512` and `overlap = 0.2`
-- Consider `TEST.DETECTIONS_PER_IMAGE = 1000` for very dense images
+- Lower `confidence` to capture faint objects, filter downstream
 
 ### Training Speed
 
-- Use `ims_per_batch = 2` per GPU for good speed/accuracy balance
-- ResNet-50 backbone is fastest, ResNeXt-101 for maximum accuracy
-- Multi-GPU training automatically scales batch size and learning rate
+- Pick the smallest `model_variant` that meets accuracy needs (`nano` → `small` → `medium` → `large`)
+- `batch_size` sets per-step memory; `grad_accum_steps` keeps the effective batch at 16 for stable convergence
+- On HPC, train with `device = "cuda"` and a suitable `time_hours` budget
 
 ## Contributing
 
@@ -464,7 +467,7 @@ If you use this package in your research, please cite:
 
 ## Acknowledgments
 
-- [Detectron2](https://github.com/facebookresearch/detectron2) - Facebook AI Research's detection framework
+- [RF-DETR](https://github.com/om-ai-lab/RF-DETR) - DETR-based transformer detector with a simplified training interface
 - [SAHI](https://github.com/obss/sahi) - Slicing aided hyper inference for small object detection
 - [reticulate](https://rstudio.github.io/reticulate/) - R-Python integration
 - [pins](https://pins.rstudio.com/) - Versioned data publishing and sharing

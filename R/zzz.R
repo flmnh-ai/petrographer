@@ -1,4 +1,9 @@
-utils::globalVariables(c("sahi", "skimage", "align_py"))
+utils::globalVariables(c(
+  "sahi", "skimage", "sv", "align_py", "visualize_py",
+  ".data", "image_id", "category_id", "count", "file_name", "full_path",
+  "image_name", "metric", "area", "orientation", "circularity",
+  "eccentricity"
+))
 
 # Package-level environment for session state (e.g., one-time warnings)
 .petrographer_env <- new.env(parent = emptyenv())
@@ -7,15 +12,27 @@ utils::globalVariables(c("sahi", "skimage", "align_py"))
   # Declare Python requirements (Reticulate >= 1.41) without initializing Python
   if (utils::packageVersion("reticulate") >= "1.41") {
     reticulate::py_require(c(
-      "sahi", 'rfdetr', "inference", "opencv-python", "scikit-image"
+      "sahi", "rfdetr",
+      # TODO: confirm whether Roboflow's `inference` package is still needed.
+      # No R or inst/python code currently imports it as of 2026-04 — it may be
+      # a leftover from the pre-RF-DETR workflow. Drop if nothing regresses.
+      "inference",
+      "supervision",
+      "opencv-python", "scikit-image"
     ))
   }
 
   # Delay-load Python modules (keeps package load fast + CRAN-safe)
   sahi <<- reticulate::import("sahi", delay_load = TRUE)
   skimage <<- reticulate::import("skimage", delay_load = TRUE)
+  sv <<- reticulate::import("supervision", delay_load = TRUE)
   align_py <<- reticulate::import_from_path(
     "align",
+    path = system.file("python", package = "petrographer"),
+    delay_load = TRUE
+  )
+  visualize_py <<- reticulate::import_from_path(
+    "visualize",
     path = system.file("python", package = "petrographer"),
     delay_load = TRUE
   )

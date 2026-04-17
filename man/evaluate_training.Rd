@@ -2,13 +2,7 @@
 % Please edit documentation in R/prediction.R
 \name{evaluate_training}
 \alias{evaluate_training}
-\title{Evaluate model training
-Reads Detectron2 metrics.json and exports:
-\itemize{
-\item training_metrics.csv: losses, lr, etc.
-\item validation_metrics.csv: aggregate COCO bbox and segm AP metrics
-\item validation_classwise.csv: per-class AP metrics (when logged by evaluator)
-}}
+\title{Evaluate model training}
 \usage{
 evaluate_training(
   model_id = NULL,
@@ -30,11 +24,17 @@ evaluate_training(
 List with parsed tibbles and summary statistics
 }
 \description{
-Evaluate model training
-Reads Detectron2 metrics.json and exports:
+Parses RF-DETR training metrics and exports:
 \itemize{
-\item training_metrics.csv: losses, lr, etc.
-\item validation_metrics.csv: aggregate COCO bbox and segm AP metrics
-\item validation_classwise.csv: per-class AP metrics (when logged by evaluator)
+\item training_metrics.csv: per-epoch losses, learning rate, class error
+\item validation_metrics.csv: per-epoch validation losses + AP/AR + summary map
+\item validation_classwise.csv: per-class AP/precision/recall (when logged)
+}
+}
+\details{
+Source-file preference (first one found wins):
+\enumerate{
+\item \code{metrics.csv} — RF-DETR >= 1.6.0 (PyTorch Lightning CSVLogger)
+\item \code{log.txt}     — RF-DETR <  1.6.0 (native training loop, JSONL)
 }
 }

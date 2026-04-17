@@ -1,5 +1,9 @@
 ---
 title: "Whole-Slide Prediction Basics"
+vignette: >
+  %\VignetteIndexEntry{Whole-Slide Prediction Basics}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
 format:
   html:
     toc: true
@@ -9,11 +13,19 @@ execute:
   eval: false
 ---
 
-This vignette walks through a complete whole-slide inference workflow using `petrographer`. It mirrors the experience of a user who has a scanned thin section, wants to run the pretrained detector with SAHI slicing, and then review both the visual overlays and quantitative statistics.
+This vignette walks through a whole-slide style inference workflow using a
+pretrained **detection** model. The focus is:
+
+- loading a pretrained model
+- running sliced inference on a large image
+- reviewing overlays and tabular outputs
+- summarizing detections for downstream analysis
+
+For now this is detection-first. Segmentation can also be run on large images,
+but its workflow is different because RF-DETR segmentation does not yet use the
+SAHI path in this package.
 
 ## Load the Toolkit
-
-The package ships with all high-level helpers. Load it alongside a few tidy utilities you may want for inspection.
 
 ```{r setup}
 library(petrographer)
@@ -21,40 +33,54 @@ library(dplyr)
 library(fs)
 ```
 
-## Point to Your Whole-Slide Image
+## Point to a Large Image
 
-Set the path to the slide you want to analyse. Replace the placeholder with your `.svs`, `.tif`, or other supported image file.
+Replace the placeholder path with a whole-slide image or any large thin-section
+image you want to analyze.
 
-```{r whole-slide-path, eval=FALSE}
-wsi_path <- system.file("extdata", "test_image.jpg", package = "petrographer")
+```{r whole-slide-path}
+wsi_path <- "path/to/whole_slide_image.tif"
 file_exists(wsi_path)
 ```
 
-Swap in your `.svs`, `.tif`, or other supported whole-slide file once you are ready to run the full workflow.
+## Load a Pretrained Model
 
-## Cache a Pretrained Model
+Use `from_pretrained()` to load a detector from your local board or the public
+hub.
 
-Pretrained weights are hosted on the petrographer hub. Install (or refresh) the pin you need, then instantiate the R-side wrapper. Replace `model_id` with whichever detector matches your slide.
+```{r load-model}
+model <- from_pretrained(
+  model_id = "inclusions_small",
+  device = "cpu",
+  confidence = 0.5
+)
 
-```{r load-model, eval=FALSE}
-model <- from_pretrained('inclusions_shell')
+model
 ```
 
-`pg_install_pretrained()` downloads the pin once and reuses the cache next time. The returned `PetrographyModel` retains the manifest so you can inspect provenance or training metadata as needed.
+The loaded object keeps the parsed manifest and training summary, so you can
+inspect provenance if needed:
 
-## Run SAHI Inference with Custom Strides
+```{r inspect-model}
+model$manifest$model
+model$training_summary$training
+```
 
-Whole-slide images are large, so enabling SAHI slicing keeps detections accurate while fitting within GPU or CPU memory. Control the stride through `slice_size` and `overlap`.
+## Run SAHI Inference
 
-```{r predict-slide, eval=FALSE}
+For large images, sliced inference usually works better than trying to process
+the entire image at once. `slice_size` and `overlap` let you trade off runtime,
+memory use, and boundary stability.
+
+```{r predict-slide}
 output_dir <- path("results", path_file(path_ext_remove(wsi_path)))
 
 predictions <- predict_image(
   image_path = wsi_path,
   model = model,
-  use_slicing = FALSE,
-  slice_size = 1024,  # pixels per tile; shrink for tighter memory budgets
-  overlap = 0.2,     # tile overlap to smooth boundaries
+  use_slicing = TRUE,
+  slice_size = 1024,
+  overlap = 0.2,
   output_dir = output_dir,
   save_visualizations = TRUE
 )
@@ -62,28 +88,24 @@ predictions <- predict_image(
 predictions
 ```
 
-The tibble contains one row per detected grain, complete with geometric measurements and morphology descriptors ready for downstream analysis.
+The returned tibble contains one row per detected object, including class
+labels, confidence scores, bounding-box-derived geometry, and summary fields
+added by `enhance_results()`.
 
-## Visualise the Overlay and Exports
+## Review the Overlay
 
-SAHI writes annotated overlays alongside the raw detections. Locate the generated assets and preview them in-line.
-
-```{r visualise-results, eval=FALSE}
+```{r visualise-results}
 dir_ls(output_dir)
 
 viz_path <- dir_ls(output_dir, glob = "*_prediction.png", fail = FALSE)
 if (length(viz_path)) {
-  image_read(viz_path[[1]])
+  knitr::include_graphics(viz_path[[1]])
 }
 ```
 
-You can also hand the exported visual to image viewers or documentation pipelines — each file is saved with the original slide name plus `_prediction.png`.
+## Summarize Detections
 
-## Summarise Detection Statistics
-
-With the predictions tibble in hand, compute per-image summaries or overall population metrics to quantify mineralogy at scale.
-
-```{r summarise-stats, eval=FALSE}
+```{r summarise-stats}
 per_image <- summarize_by_image(predictions)
 per_image
 
@@ -91,10 +113,34 @@ population <- get_population_stats(predictions)
 population
 ```
 
-These summaries surface object counts, size distributions, and shape metrics that support QA checks or comparisons between slides.
+These summaries are useful for:
+
+- slide-level QA
+- comparing slides or treatment groups
+- spotting large shifts in count or size distributions
+
+## Batch Process a Directory
+
+Once you are happy with the settings on one image, scale out to a directory.
+
+```{r batch-predict}
+batch_results <- predict_images(
+  input_dir = "path/to/whole_slide_directory",
+  model = model,
+  use_slicing = TRUE,
+  slice_size = 1024,
+  overlap = 0.2,
+  output_dir = "results/batch_whole_slides",
+  save_visualizations = TRUE
+)
+
+batch_results
+```
 
 ## Next Steps
 
-- Adjust `slice_size` and `overlap` to balance runtime and fidelity for extremely large slides.
-- Pipe `predictions` into custom tidyverse workflows for further filtering, plotting, or reporting.
-- Use `predict_images()` to batch-process entire slide directories once you are satisfied with the single-slide results.
+- adjust `slice_size` and `overlap` to match your image scale and memory budget
+- filter `predictions` with tidyverse tools for class-specific summaries
+- use `summarize_by_image()` and `get_population_stats()` for reporting
+- for segmentation-oriented workflows, use the training and prediction
+  templates/notebooks rather than this detection-first vignette

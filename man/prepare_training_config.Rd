@@ -9,19 +9,20 @@ prepare_training_config(
   dataset_id,
   dataset_version,
   model_id,
-  num_classes,
-  backbone,
-  freeze_at,
-  max_iter,
+  model_variant,
+  resolution,
+  epochs,
+  grad_accum_steps,
   learning_rate,
   device,
-  eval_period,
-  checkpoint_period,
-  ims_per_batch,
+  batch_size,
+  use_amp,
+  amp_dtype,
+  gradient_checkpointing,
   num_workers,
-  hpc_cpus_per_task,
-  hpc_mem,
-  gpus
+  time_hours,
+  validate_every,
+  early_stopping_patience
 )
 }
 \description{

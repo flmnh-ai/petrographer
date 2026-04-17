@@ -1,0 +1,220 @@
+---
+title: "lyons work"
+vignette: >
+  %\VignetteIndexEntry{Lyons Work}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
+format: html
+editor: visual
+execute:
+  eval: false
+---
+
+```{r}
+library(petrographer)
+library(here)
+```
+
+```{r}
+data_dir <- here('data/raw/Lyons_data/a')
+sahi
+sliced_dir <- slice_dataset(
+  input_dir = data_dir,
+  output_dir = here("data/lyons_slice_a"),
+  slice_size = 1024,
+  overlap = 0.2,
+  min_area_ratio = 0.1
+)
+```
+
+```{r}
+library(reticulate)
+pyco
+sahi <- import(sahi)
+
+sahi$slicing$slice_coco(
+    image_dir=data_dir,here("data/lyons_slice_a")
+    output_dir=,
+    slice_height=1024,
+    slice_width=1024,
+    overlap_height_ratio=0.2,
+    overlap_width_ratio=0.2,
+)
+```
+
+```{r}
+model <- from_pretrained('inclusions')
+data_dir <- here('data/raw/Lyons_data/c')
+
+ result <- predict_images(
+    input_dir = data_dir,
+    model = model,
+    use_slicing = TRUE,
+    slice_size = 1024,
+    overlap = 0.2,
+    output_dir = "results/lyons",
+    save_visualizations = TRUE,
+    save_coco_json = "results/lyons/predictions.json"  # NEW!
+  )
+
+```
+
+```{r}
+library(reticulate)
+library(tidyverse)
+library(fs)
+library(progress)
+
+# Import SAHI slicing function
+sahi <- import("sahi.slicing")
+
+# Function to slice images in a directory
+slice_images_batch <- function(input_dir, 
+                               output_dir,
+                               slice_height = 256L,
+                               slice_width = 256L,
+                               overlap_height_ratio = 0.2,
+                               overlap_width_ratio = 0.2,
+                               out_ext = ".jpg",  # Added this parameter
+                               image_extensions = c("jpg", "jpeg", "png", "tif", "tiff")) {
+  
+  # Expand paths (handles ~ properly)
+  input_dir <- path_expand(input_dir)
+  output_dir <- path_expand(output_dir)
+  
+  # Create output directory if it doesn't exist
+  dir_create(output_dir, recurse = TRUE)
+  
+  # Get all image files
+  image_files <- dir_ls(input_dir, 
+                        regexp = paste0("\\.(", paste(image_extensions, collapse = "|"), ")$"),
+                        recurse = FALSE)
+  
+  if (length(image_files) == 0) {
+    stop("No image files found in ", input_dir)
+  }
+  
+  cat("Found", length(image_files), "images to process\n\n")
+  
+  # Create progress bar
+  pb <- progress_bar$new(
+    format = "  [:bar] :current/:total (:percent) eta: :eta",
+    total = length(image_files),
+    clear = FALSE,
+    width = 80
+  )
+  
+  # Process each image
+  results <- tibble(
+    image_path = image_files,
+    filename = path_file(image_path),
+    filename_no_ext = path_ext_remove(filename),
+    num_slices = NA_integer_,
+    success = FALSE
+  )
+  
+  for (i in seq_along(image_files)) {
+    pb$tick()
+    
+    tryCatch({
+      result <- sahi$slice_image(
+        image = as.character(results$image_path[i]),
+        output_file_name = as.character(results$filename_no_ext[i]),
+        output_dir = as.character(output_dir),
+        slice_height = as.integer(slice_height),
+        slice_width = as.integer(slice_width),
+        overlap_height_ratio = as.numeric(overlap_height_ratio),
+        overlap_width_ratio = as.numeric(overlap_width_ratio),
+        out_ext = out_ext  # Pass the extension parameter
+      )
+      
+      results$num_slices[i] <- length(result$images)
+      results$success[i] <- TRUE
+      
+    }, error = function(e) {
+      warning("Failed to process ", results$filename[i], ": ", e$message, call. = FALSE)
+      results$success[i] <<- FALSE
+    })
+  }
+  
+  # Summary
+  cat("\n\nCompleted!\n")
+  cat("  Successfully processed:", sum(results$success), "images\n")
+  cat("  Failed:", sum(!results$success), "images\n")
+  cat("  Total slices created:", sum(results$num_slices, na.rm = TRUE), "\n")
+  cat("  Output directory:", output_dir, "\n")
+  
+  return(results)
+}
+
+# Example usage - saves as JPG by default:
+# results <- slice_images_batch(
+#   input_dir = "~/dropbox/pretrain",
+#   output_dir = "~/dropbox/sliced_images"
+# )
+
+# Or specify PNG:
+# results <- slice_images_batch(
+#   input_dir = "~/dropbox/pretrain",
+#   output_dir = "~/dropbox/sliced_images",
+#   out_ext = ".png"
+# )
+  # Create progress b
+# Example usage:
+slice_images_batch(
+  input_dir = '~/dropbox/pretrain/',
+  output_dir = "~/dropbox/pretrain_slices/",
+  slice_height = 1024,
+  slice_width = 1024,
+  overlap_height_ratio = 0.2,
+  overlap_width_ratio = 0.2
+)
+```
+
+```{r}
+library(reticulate)
+library(fs)
+
+# Import SAHI
+sahi <- import("sahi.slicing")
+
+# Test with a single image first
+test_image <- "~/dropbox/pretrain/105-27_xp_000018.jpg"  # <- Update this
+test_output_dir <- "test_slices"       # <- Update this
+
+# Create output directory
+dir_create(test_output_dir)
+
+# Try slicing one image
+cat("Attempting to slice image...\n")
+result <- sahi$slice_image(
+  image = test_image,
+  output_file_name = "test",
+  output_dir = test_output_dir,
+  slice_height = 256L,
+  slice_width = 256L,
+  overlap_height_ratio = 0.2,
+  overlap_width_ratio = 0.2
+)
+
+# Check the result
+cat("\nResult object type:", class(result), "\n")
+cat("Result attributes:", paste(names(result), collapse = ", "), "\n")
+
+# Check if images were created
+cat("\nNumber of slices in result$images:", length(result$images), "\n")
+
+# Check what files are in the output directory
+output_files <- dir_ls(test_output_dir)
+cat("\nFiles in output directory:", length(output_files), "\n")
+if (length(output_files) > 0) {
+  print(output_files)
+} else {
+  cat("No files created!\n")
+}
+
+# Check if image_dir attribute exists
+if ("image_dir" %in% names(result)) {
+  cat("\nresult$image_dir:", result$image_dir, "\n")
+}
+```

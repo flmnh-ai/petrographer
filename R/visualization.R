@@ -1,34 +1,29 @@
 #' Plot COCO annotations on an image
 #'
-#' Draws bounding boxes (and optional labels) from a COCO-style annotation
-#' file on top of an image. Returns a `magick-image` object that can be printed
-#' or written to disk.
+#' Draws ground-truth bounding boxes (and segmentation masks when present) from
+#' a COCO-style annotation file on top of an image. Rendering is delegated to
+#' Roboflow's `supervision` library via reticulate, so GT overlays stay visually
+#' consistent with prediction overlays produced by [predict_image()].
 #'
 #' @param image_path Path to the image file.
 #' @param annotation_json Path to the COCO annotations JSON containing the image.
-#' @param categories Optional vector of category names or ids to keep. NULL keeps all.
-#' @param class_colors Optional named vector of colours keyed by category name.
-#' @param outline_width Line width for bounding boxes.
-#' @param label Whether to draw category labels.
-#' @param label_cex Text expansion factor for labels.
-#' @param label_alpha Alpha for label background fill.
-#' @param label_colour Label text colour.
-#' @return A `magick-image` with annotations drawn.
+#' @param categories Optional vector of category names or ids to keep.
+#'   `NULL` keeps all.
+#' @param output Destination PNG path. Defaults to a tempfile.
+#' @param display Whether to render the annotated image on the current graphics
+#'   device. Defaults to `TRUE` in interactive sessions and inside knitr
+#'   (so the image appears under the chunk).
+#' @param draw_labels Whether to draw category labels. Default `TRUE`.
+#' @param mask_opacity Opacity for mask fills (segmentation datasets). Default `0.4`.
+#' @return The path to the written PNG, invisibly.
 #' @export
-#' @importFrom graphics rect text strwidth strheight par
-#' @importFrom grDevices adjustcolor hcl.colors
 pg_plot_annotations <- function(image_path,
                                 annotation_json,
                                 categories = NULL,
-                                class_colors = NULL,
-                                outline_width = 4,
-                                label = TRUE,
-                                label_cex = 0.8,
-                                label_alpha = 0.6,
-                                label_colour = "white") {
-  if (!requireNamespace("magick", quietly = TRUE)) {
-    cli::cli_abort("The 'magick' package is required. Install with install.packages('magick').")
-  }
+                                output = NULL,
+                                display = NULL,
+                                draw_labels = TRUE,
+                                mask_opacity = 0.4) {
 
   image_path <- fs::path_abs(image_path)
   annotation_json <- fs::path_abs(annotation_json)
@@ -40,110 +35,36 @@ pg_plot_annotations <- function(image_path,
     cli::cli_abort("Annotation json not found: {.path {annotation_json}}")
   }
 
-  ann <- jsonlite::read_json(annotation_json)
-  image_name <- fs::path_file(image_path)
-  images <- ann$images %||% list()
-  idx <- which(vapply(images, function(im) identical(im$file_name, image_name), logical(1)))
-  if (!length(idx)) {
-    cli::cli_abort("Image '{image_name}' is not listed in {annotation_json}.")
+  if (is.null(output)) {
+    output <- fs::file_temp(ext = "png")
   }
-  image_id <- images[[idx]]$id
+  fs::dir_create(fs::path_dir(output))
 
-  annotations <- ann$annotations %||% list()
-  annotations <- Filter(function(a) identical(a$image_id, image_id), annotations)
-  if (!length(annotations)) {
-    cli::cli_warn("No annotations for image {image_name} in {annotation_json}.")
+  categories_py <- if (is.null(categories)) {
+    NULL
+  } else if (is.numeric(categories)) {
+    as.list(as.integer(categories))
+  } else {
+    as.list(as.character(categories))
   }
 
-  category_table <- ann$categories %||% list()
-  category_map <- setNames(
-    vapply(category_table, function(cat) cat$name %||% as.character(cat$id), character(1)),
-    vapply(category_table, function(cat) cat$id, numeric(1))
+  visualize_py$render_coco_overlay(
+    image_path       = as.character(image_path),
+    annotations_json = as.character(annotation_json),
+    output_path      = as.character(output),
+    categories_keep  = categories_py,
+    draw_labels      = isTRUE(draw_labels),
+    mask_opacity     = as.numeric(mask_opacity)
   )
 
-  if (!is.null(categories) && length(annotations)) {
-    keep_ids <- if (is.numeric(categories)) {
-      categories
-    } else {
-      names(category_map)[match(categories, category_map, nomatch = 0)] |> as.numeric()
-    }
-    annotations <- Filter(function(a) a$category_id %in% keep_ids, annotations)
+  if (is.null(display)) {
+    display <- interactive() || isTRUE(getOption("knitr.in.progress"))
+  }
+  if (isTRUE(display)) {
+    .display_png(output)
   }
 
-  if (!length(annotations)) {
-    return(magick::image_read(image_path))
-  }
-
-  cat_ids <- unique(vapply(annotations, function(a) a$category_id, numeric(1)))
-  cat_names <- category_map[as.character(cat_ids)]
-  if (is.null(class_colors)) {
-    palette <- grDevices::hcl.colors(length(cat_ids), palette = "Dark3")
-    class_colors <- setNames(palette, cat_names)
-  } else {
-    missing <- setdiff(cat_names, names(class_colors))
-    if (length(missing)) {
-      cli::cli_warn("No colour provided for categories: {missing}. Using defaults.")
-      palette <- grDevices::hcl.colors(length(missing), palette = "Dark3")
-      class_colors <- c(class_colors, setNames(palette, missing))
-    }
-  }
-
-  img <- magick::image_read(image_path)
-  info <- magick::image_info(img)
-  width <- info$width
-  height <- info$height
-
-  draw <- magick::image_draw(img)
-  graphics::par(mar = c(0, 0, 0, 0))
-
-  for (a in annotations) {
-    bbox <- a$bbox
-    x1 <- bbox[[1]]
-    y_top <- bbox[[2]]
-    w <- bbox[[3]]
-    h <- bbox[[4]]
-    x2 <- x1 + w
-    y_bottom <- y_top + h
-
-    colour <- class_colors[[ category_map[[as.character(a$category_id)]] ]] %||% "#ff9800"
-
-    graphics::rect(
-      x1,
-      height - y_top,
-      x2,
-      height - y_bottom,
-      border = colour,
-      lwd = outline_width
-    )
-
-    if (isTRUE(label)) {
-      label_text <- category_map[[as.character(a$category_id)]] %||% as.character(a$category_id)
-      str_w <- graphics::strwidth(label_text, cex = label_cex)
-      str_h <- graphics::strheight(label_text, cex = label_cex)
-      pad <- 4
-      x_lab <- x1 + pad
-      y_lab_top <- height - y_top - pad
-      graphics::rect(
-        x1,
-        y_lab_top - str_h - pad,
-        x1 + str_w + 2 * pad,
-        y_lab_top + pad,
-        col = grDevices::adjustcolor(colour, alpha.f = label_alpha),
-        border = NA
-      )
-      graphics::text(
-        x_lab,
-        y_lab_top,
-        labels = label_text,
-        adj = c(0, 1),
-        cex = label_cex,
-        col = label_colour
-      )
-    }
-  }
-
-  grDevices::dev.off()
-  draw
+  invisible(as.character(output))
 }
 
 #' Plot a sample image from a dataset directory
@@ -153,7 +74,7 @@ pg_plot_annotations <- function(image_path,
 #' @param image_name Optional specific image file name; otherwise a random one.
 #' @param annotation_json Optional explicit path to annotation JSON.
 #' @param ... Additional arguments passed to [pg_plot_annotations()].
-#' @return A `magick-image` with annotations drawn.
+#' @return The path to the written PNG, invisibly.
 #' @export
 pg_plot_dataset_image <- function(dataset_dir,
                                   split = c("train", "valid", "test"),
@@ -211,7 +132,40 @@ pg_save_dataset_preview <- function(dataset_dir,
   if (!overwrite && fs::file_exists(output)) {
     return(invisible(output))
   }
-  img <- pg_plot_dataset_image(dataset_dir, split = split, ...)
-  magick::image_write(img, path = output)
+  pg_plot_dataset_image(
+    dataset_dir = dataset_dir,
+    split       = split,
+    output      = output,
+    display     = FALSE,
+    ...
+  )
   invisible(output)
+}
+
+# ----------------------------------------------------------------------------
+# Internal helpers
+# ----------------------------------------------------------------------------
+
+#' Render a PNG on the current graphics device.
+#'
+#' Uses `png` + `grid` so the output is captured by knitr inside a chunk, shows
+#' in the RStudio viewer when interactive, and otherwise writes to whatever
+#' device is active. No magick dependency.
+#'
+#' @noRd
+.display_png <- function(path) {
+  if (!requireNamespace("png", quietly = TRUE)) {
+    cli::cli_warn(
+      "Install the {.pkg png} package to display annotated images inline."
+    )
+    return(invisible(NULL))
+  }
+  if (!requireNamespace("grid", quietly = TRUE)) {
+    # `grid` is base R, but be defensive.
+    return(invisible(NULL))
+  }
+  img <- png::readPNG(path)
+  grid::grid.newpage()
+  grid::grid.raster(img)
+  invisible(NULL)
 }

@@ -6,22 +6,21 @@
 print.PetrographyModel <- function(x, ...) {
   cli::cli_h2("Petrography Model")
 
-  # Try to get class names from config if available
-  class_names <- NULL
-  if (fs::file_exists(x$config_path)) {
-    cfg <- yaml::read_yaml(x$config_path)
-    # Try to extract class names from various possible locations in config
-    if (!is.null(cfg$DATASETS$TRAIN) && length(cfg$DATASETS$TRAIN) > 0) {
-      class_names <- paste0("<from dataset: ", cfg$DATASETS$TRAIN[1], ">")
-    }
+  category_map <- .manifest_category_map(x$manifest)
+  class_display <- if (length(category_map$model_id_to_name) > 0) {
+    paste(unname(category_map$model_id_to_name), collapse = ", ")
+  } else {
+    "<unknown>"
   }
 
   cli::cli_dl(c(
     "Model path" = x$model_path,
-    "Config path" = x$config_path,
+    "Variant" = x$model_variant %||% "<unknown>",
+    "Resolution" = if (!is.null(x$resolution)) as.character(x$resolution) else "<unknown>",
+    "Type" = if (isTRUE(x$is_segmentation)) "segmentation" else "detection",
     "Confidence threshold" = x$confidence,
     "Device" = x$device,
-    "Classes" = class_names %||% "<unknown>"
+    "Classes" = class_display
   ))
   invisible(x)
 }
@@ -35,9 +34,11 @@ print.sahi_evaluation <- function(x, ...) {
 
   cli::cli_alert_info("{n_detections} detection{?s} across {n_images} image{?s}")
 
-  # Show key metrics
+  # Show key metrics. The AR@N row name depends on the max_dets used at
+  # evaluation time, so pick it up dynamically rather than hardcoding AR@100.
+  ar_metric <- grep("^AR@", x$summary$metric, value = TRUE)
   key_metrics <- x$summary |>
-    dplyr::filter(metric %in% c("AP", "AP50", "AP75", "AR@100"))
+    dplyr::filter(metric %in% c("AP", "AP50", "AP75", ar_metric))
 
   cli::cli_h3("Key Metrics")
   for (i in seq_len(nrow(key_metrics))) {
@@ -52,25 +53,40 @@ print.sahi_evaluation <- function(x, ...) {
 print.training_evaluation <- function(x, ...) {
   cli::cli_h2("Training Evaluation Results")
 
-  cli::cli_dl(c(
-    "Total iterations" = x$summary$total_iterations,
-    "Validation evaluations" = x$summary$validation_evaluations,
-    "Segm metrics available" = if (isTRUE(x$summary$validation_segm_available)) "yes" else "no",
-    "Training records" = nrow(x$training_data),
-    "Output directory" = x$output_dir
-  ))
+  dl <- c(
+    x$summary$metrics_source %||% "<none>",
+    x$summary$total_epochs %||% 0,
+    x$summary$validation_evaluations,
+    nrow(x$training_data),
+    x$output_dir
+  )
+  names(dl) <- c("Metrics source", "Total epochs", "Validation evaluations",
+                 "Training records", "Output directory")
+  cli::cli_dl(dl)
 
-  if (nrow(x$training_data) > 0) {
-    final_metrics <- tail(x$training_data, 1)
-    if ("total_loss" %in% names(final_metrics)) {
-      cli::cli_alert_info("Final training loss: {round(final_metrics$total_loss, 4)}")
+  if (nrow(x$training_data) > 0 && "loss" %in% names(x$training_data)) {
+    final_loss <- utils::tail(x$training_data$loss, 1)
+    if (!is.na(final_loss)) {
+      cli::cli_alert_info("Final training loss: {round(final_loss, 4)}")
     }
   }
 
   if (!is.null(x$validation_data) && nrow(x$validation_data) > 0) {
-    final_val <- tail(x$validation_data, 1)
-    if ("segm_AP" %in% names(final_val)) {
-      cli::cli_alert_info("Final segm/AP: {round(final_val$segm_AP, 4)}")
+    final_val <- utils::tail(x$validation_data, 1)
+    # Preference order across RF-DETR source formats:
+    #   PTL metrics.csv : mAP_50_95, ema_mAP_50_95
+    #   log.txt JSONL   : map (from test_results_json), ap (from COCO array)
+    pref <- c("mAP_50_95", "map", "ap", "ema_mAP_50_95")
+    chosen <- intersect(pref, names(final_val))
+    for (nm in chosen) {
+      v <- final_val[[nm]]
+      if (!is.na(v)) {
+        cli::cli_alert_info("Final validation {nm}: {round(v, 4)}")
+        break
+      }
+    }
+    if ("loss" %in% names(final_val) && !is.na(final_val$loss)) {
+      cli::cli_alert_info("Final validation loss: {round(final_val$loss, 4)}")
     }
   }
 
@@ -91,7 +107,16 @@ clean_names <- function(.data) {
 
 enhance_results <- function(.data) {
   if (nrow(.data) == 0) return(.data)
-  .data |>
+
+  # shape_category depends on mask-based morphology (circularity, eccentricity).
+  # Detection-only models fall back to bbox morphology and return NA for those
+  # columns — in that case every row would drop through case_when() to
+  # "irregular", which is misleading. Return NA instead when we have no real
+  # signal. (aspect_ratio alone isn't enough to justify a shape call.)
+  shape_available <- any(!is.na(.data$circularity)) ||
+    any(!is.na(.data$eccentricity))
+
+  out <- .data |>
     dplyr::mutate(
       log_area = log10(area),
       orientation_deg = orientation * 180 / pi,
@@ -99,13 +124,21 @@ enhance_results <- function(.data) {
         area < stats::quantile(area, 0.33, na.rm = TRUE) ~ "small",
         area < stats::quantile(area, 0.67, na.rm = TRUE) ~ "medium",
         TRUE ~ "large"
-      ),
-      shape_category = dplyr::case_when(
-        circularity > 0.8 ~ "circular",
-        aspect_ratio > 2 ~ "elongated",
-        eccentricity > 0.8 ~ "eccentric",
-        TRUE ~ "irregular"
       )
     )
-}
 
+  if (shape_available) {
+    out |>
+      dplyr::mutate(
+        shape_category = dplyr::case_when(
+          circularity > 0.8 ~ "circular",
+          aspect_ratio > 2 ~ "elongated",
+          eccentricity > 0.8 ~ "eccentric",
+          TRUE ~ "irregular"
+        )
+      )
+  } else {
+    out |>
+      dplyr::mutate(shape_category = NA_character_)
+  }
+}

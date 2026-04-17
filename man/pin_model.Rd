@@ -2,7 +2,7 @@
 % Please edit documentation in R/pins.R
 \name{pin_model}
 \alias{pin_model}
-\title{Pin a trained model to a board}
+\title{Pin a trained RF-DETR model to a board}
 \usage{
 pin_model(model_dir, model_id, board, metadata = list())
 }

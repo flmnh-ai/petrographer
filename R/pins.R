@@ -33,8 +33,16 @@
 #'   - Custom board object
 #' @param device Device: "cpu", "cuda", or "mps"
 #' @param confidence Detection threshold
-#' @param resolution Input image resolution for RF-DETR (default: auto-detect from variant -
-#'   nano=384, small=512, medium=576). Must be divisible by 32.
+#' @param resolution Input image resolution for RF-DETR (default: auto-detect
+#'   from variant). Defaults by variant:
+#'   \itemize{
+#'     \item Detection (patch_size=16, divisible by 32):
+#'       nano=384, small=512, medium=576, large=704
+#'     \item Segmentation (patch_size=12, divisible by 12):
+#'       seg_nano=312, seg_small=384, seg_medium=432, seg_large=504,
+#'       seg_xlarge=624, seg_2xlarge=768, seg_preview=432
+#'   }
+#'   Override only if you know your dataset wants a different input size.
 #' @return PetrographyModel object containing RF-DETR model
 #' @export
 #' @examples
@@ -82,22 +90,21 @@ from_pretrained <- function(model_id,
   # Download model files
   files <- pins::pin_download(board, model_id, version = version)
 
-  # Load metadata for class names
-  metadata_path <- files[grepl("metadata\\.json$", files)][1]
-
-  category_mapping <- NULL
-  metadata_json <- NULL
-
-  if (!is.na(metadata_path) && fs::file_exists(metadata_path)) {
-    metadata_json <- jsonlite::read_json(metadata_path)
-
-    if (!is.null(metadata_json$thing_classes)) {
-      # Convert R list to Python dict: {0: "class1", 1: "class2", ...}
-      class_names <- unlist(metadata_json$thing_classes)
-      category_mapping <- as.list(setNames(class_names, seq_along(class_names) - 1))
-      cli::cli_alert_info("Loaded {length(category_mapping)} class names from metadata")
-    }
+  manifest_path <- files[grepl("manifest\\.json$", files)][1]
+  if (is.na(manifest_path) || !fs::file_exists(manifest_path)) {
+    cli::cli_abort("No manifest.json found for {.val {model_id}}")
   }
+
+  manifest <- jsonlite::read_json(manifest_path, simplifyVector = FALSE)
+  .validate_model_manifest(manifest, files = files)
+
+  category_mapping <- .manifest_category_name_map(manifest)
+  if (!is.null(category_mapping)) {
+    cli::cli_alert_info("Loaded {length(category_mapping)} class names from manifest")
+  }
+
+  training_summary_path <- .find_downloaded_artifact(files, manifest$artifacts$training_summary)
+  training_summary <- .read_training_summary(training_summary_path)
 
   cli::cli_alert_success("Loading {.strong {model_id}}")
 
@@ -106,12 +113,12 @@ from_pretrained <- function(model_id,
   rfdetr <- reticulate::import("rfdetr")
 
   # Find model weights
-  model_path <- files[grepl("checkpoint_best_total\\.pth$", files)][1]
+  model_path <- .find_downloaded_artifact(files, manifest$model$weights)
   if (is.na(model_path)) cli::cli_abort("No model weights found for {.val {model_id}}")
 
-  # Get model variant from metadata
-  model_variant <- metadata_json$model_variant %||% "nano"
-  is_seg <- startsWith(model_variant, "seg")
+  # Get model variant from manifest
+  model_variant <- manifest$model$variant
+  is_seg <- identical(manifest$model$task, "segmentation")
 
   # Map variant to rfdetr class name
   variant_to_class <- c(
@@ -132,12 +139,12 @@ from_pretrained <- function(model_id,
 
   # Set resolution based on variant if not specified
   if (is.null(resolution)) {
-    resolution <- switch(model_variant,
-      nano = 384L, seg_nano = 384L,
-      small = 512L, seg_small = 512L,
-      medium = 576L, seg_medium = 576L,
-      large = 640L, seg_large = 640L,
-      seg_xlarge = 704L, seg_2xlarge = 880L,
+    resolution <- manifest$model$resolution %||% switch(model_variant,
+      # Detection models (patch_size=16)
+      nano = 384L, small = 512L, medium = 576L, large = 704L,
+      # Segmentation models (patch_size=12, different resolutions)
+      seg_nano = 312L, seg_small = 384L, seg_medium = 432L,
+      seg_large = 504L, seg_xlarge = 624L, seg_2xlarge = 768L,
       seg_preview = 432L,
       512L  # fallback
     )
@@ -172,7 +179,8 @@ from_pretrained <- function(model_id,
       confidence = confidence,
       device = device,
       is_segmentation = TRUE,
-      manifest = metadata_json
+      manifest = manifest,
+      training_summary = training_summary
     )
   } else {
     # Detection models: load via SAHI for sliced inference
@@ -195,7 +203,8 @@ from_pretrained <- function(model_id,
       confidence = confidence,
       device = device,
       is_segmentation = FALSE,
-      manifest = metadata_json
+      manifest = manifest,
+      training_summary = training_summary
     )
   }
 
@@ -220,8 +229,16 @@ pin_model <- function(model_dir,
                       metadata = list()) {
 
   # RF-DETR required files
-  required <- c("checkpoint_best_total.pth", "metadata.json")
-  optional <- c("log.txt", "metrics.json", "metrics_plot.png", "results.json")
+  required <- c("checkpoint_best_total.pth", "manifest.json", "training_summary.json")
+  # Optional artifacts:
+  #   metrics.csv, hparams.yaml                 -> RF-DETR >= 1.6.0 (PTL CSVLogger)
+  #   log.txt, metrics_plot.png, results.json   -> RF-DETR <  1.6.0 (native loop)
+  # Keep both sets so legacy pins still round-trip cleanly.
+  optional <- c(
+    "metadata.json",
+    "metrics.csv", "hparams.yaml",
+    "log.txt", "metrics_plot.png", "results.json"
+  )
 
   files <- fs::path(model_dir, required)
 
@@ -234,8 +251,11 @@ pin_model <- function(model_dir,
   opt_files <- fs::path(model_dir, optional)
   files <- c(files, opt_files[fs::file_exists(opt_files)])
 
-  # Add timestamp
-  metadata$pinned <- Sys.time()
+  # Add timestamp (caller-supplied value wins so notes like
+  # metadata$pinned = "first stable release" aren't clobbered).
+  if (is.null(metadata$pinned)) {
+    metadata$pinned <- Sys.time()
+  }
 
   # Upload
   pins::pin_upload(board, files, name = model_id, metadata = metadata)

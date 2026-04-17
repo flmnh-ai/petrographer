@@ -8,7 +8,7 @@ predict_image(
   image_path,
   model,
   use_slicing = TRUE,
-  slice_size = 512,
+  slice_size = NULL,
   overlap = 0.2,
   output_dir = NULL,
   save_visualizations = TRUE
@@ -21,7 +21,7 @@ predict_image(
 
 \item{use_slicing}{Whether to use SAHI sliced inference (default: TRUE)}
 
-\item{slice_size}{Size of slices for SAHI in pixels (default: 512)}
+\item{slice_size}{Size of slices for SAHI in pixels (default: use model's resolution). Must be divisible by 56 for RF-DETR.}
 
 \item{overlap}{Overlap ratio between slices (default: 0.2)}
 

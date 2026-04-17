@@ -75,18 +75,24 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
     n_det <- nrow(detections$xyxy)
     if (n_det == 0) return(tibble::tibble())
 
-    # Save visualization via supervision
     if (save_visualizations) {
-      sv <- reticulate::import("supervision")
-      np <- reticulate::import("numpy")
       image_name <- tools::file_path_sans_ext(basename(image_path))
-      annotated <- img_pil$copy()
-      annotated <- sv$MaskAnnotator(opacity = 0.4)$annotate(annotated, detections)
-      annotated$save(fs::path(output_dir, paste0(image_name, "_prediction.png")))
+      visualize_py$render_sv_overlay(
+        image_path      = as.character(image_path),
+        detections      = detections,
+        class_names_map = .category_map(model),
+        output_path     = as.character(fs::path(output_dir, paste0(image_name, "_prediction.png"))),
+        draw_labels     = TRUE,
+        mask_opacity    = 0.4
+      )
     }
 
     # Extract morphology from masks
-    calculate_morphology_from_detections(detections, image_path) |>
+    calculate_morphology_from_detections(
+      detections,
+      image_path,
+      class_names_map = .category_map(model)
+    ) |>
       clean_names() |>
       enhance_results()
   } else {
@@ -115,11 +121,13 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
 
     if (save_visualizations) {
       image_name <- tools::file_path_sans_ext(basename(image_path))
-      result$export_visuals(
-        export_dir = output_dir,
-        file_name = paste0(image_name, "_prediction"),
-        hide_conf = TRUE,
-        rect_th = 2L
+      visualize_py$render_sahi_overlay(
+        image_path      = as.character(image_path),
+        sahi_result     = result,
+        output_path     = as.character(fs::path(output_dir, paste0(image_name, "_prediction.png"))),
+        class_names_map = .category_map(model),
+        draw_labels     = TRUE,
+        mask_opacity    = 0.4
       )
     }
 
@@ -127,6 +135,28 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
       clean_names() |>
       enhance_results()
   }
+}
+
+# Internal: map a prediction-time class id back to the source COCO category id.
+.prediction_category_id <- function(model, class_id) {
+  class_id <- as.integer(class_id)
+  id_map <- .manifest_category_id_map(model$manifest)
+  mapped <- unname(id_map[as.character(class_id)])
+  if (length(mapped) == 0L || is.na(mapped)) class_id else as.integer(mapped)
+}
+
+# Internal: best-effort map of class_id -> class_name for a PetrographyModel.
+# Prefers the SAHI wrapper's category_mapping (populated from manifest.json)
+# and falls back to an empty dict so Python code treats class_ids as strings.
+.category_map <- function(model) {
+  cm <- NULL
+  if (!is.null(model$sahi_model)) {
+    cm <- tryCatch(model$sahi_model$category_mapping, error = function(e) NULL)
+  }
+  if (is.null(cm)) {
+    cm <- .manifest_category_name_map(model$manifest)
+  }
+  if (is.null(cm)) reticulate::dict() else cm
 }
 
 #' Predict objects in multiple images (directory)
@@ -153,60 +183,118 @@ predict_images <- function(input_dir, model, use_slicing = TRUE,
     cli::cli_abort("model must be a PetrographyModel object from from_pretrained()")
   }
 
-  # Create output directory
+  image_files <- fs::dir_ls(
+    input_dir,
+    regexp = "(?i)\\.(jpg|jpeg|png|tif|tiff)$"
+  )
+  if (length(image_files) == 0) {
+    cli::cli_abort("No image files (jpg/jpeg/png/tif/tiff) found in {.path {input_dir}}")
+  }
+
   if (save_visualizations) {
     fs::dir_create(output_dir)
   }
 
-  # Use SAHI's native batch prediction - much more efficient!
-  result <- sahi$predict$predict(
-    model_type = 'detectron2',
-    model_path = model$model_path,
-    model_config_path = model$config_path,
-    model_confidence_threshold = model$confidence,
-    model_device = model$device,
-    source = input_dir,
-    no_standard_prediction = use_slicing,  # If using slicing, disable standard
-    no_sliced_prediction = !use_slicing,   # If not using slicing, disable sliced
-    slice_height = as.integer(slice_size %||% model$resolution %||% 512),
-    slice_width = as.integer(slice_size %||% model$resolution %||% 512),
-    overlap_height_ratio = overlap,
-    overlap_width_ratio = overlap,
-    export_pickle = FALSE,
-    export_crop = FALSE,
-    export_visuals = save_visualizations,
-    export_dir = if (save_visualizations) output_dir else NULL
-  )
-
-  # Extract all predictions from batch result
-  all_predictions <- list()
-
-  cli::cli_progress_bar("Processing predictions", total = length(result$object_prediction_list))
-  for (i in seq_along(result$object_prediction_list)) {
-    pred_result <- result$object_prediction_list[[i]]
-    image_path <- pred_result$image$file_name
-
-    if (length(pred_result$object_prediction_list) > 0) {
-      # Create a temporary result object for morphology calculation
-      temp_result <- list(object_prediction_list = pred_result$object_prediction_list)
-
-      # Calculate morphology for this image
-      morph_data <- calculate_morphology_from_result(temp_result, image_path)
-      all_predictions[[length(all_predictions) + 1]] <- morph_data
+  # Per-image inference via predict_image(), which handles both the SAHI
+  # detection path and the direct segmentation path and writes per-image
+  # visualizations into output_dir.
+  all_results <- list()
+  cli::cli_progress_bar("Running predictions", total = length(image_files))
+  for (img_path in image_files) {
+    res <- predict_image(
+      image_path = img_path,
+      model = model,
+      use_slicing = use_slicing,
+      slice_size = slice_size,
+      overlap = overlap,
+      output_dir = output_dir,
+      save_visualizations = save_visualizations
+    )
+    if (nrow(res) > 0) {
+      all_results[[length(all_results) + 1]] <- res
     }
     cli::cli_progress_update()
   }
   cli::cli_progress_done()
 
-  # Combine all results
-  if (length(all_predictions) > 0) {
-    combined_results <- purrr::map_dfr(all_predictions, identity) |>
-      clean_names() |>
-      enhance_results()
-    return(combined_results)
-  } else {
-    return(tibble::tibble())
+  if (length(all_results) == 0) return(tibble::tibble())
+
+  # Re-run enhance_results() on the combined batch so size_category quantiles
+  # reflect the whole batch rather than per-image.
+  purrr::map_dfr(all_results, identity) |>
+    enhance_results()
+}
+
+#' Run a segmentation batch workflow on a directory of images
+#'
+#' This is the higher-level segmentation path: predict a folder, save overlays,
+#' write per-object measurements, and write per-image summaries in one call.
+#' It currently uses direct RF-DETR segmentation inference; revisit once SAHI
+#' supports Roboflow segmentation models cleanly.
+#'
+#' @param input_dir Directory containing images
+#' @param model Segmentation `PetrographyModel` from [from_pretrained()]
+#' @param output_dir Output directory for overlays and tables
+#' @param save_visualizations Whether to save overlay images
+#' @param save_measurements Whether to write per-object measurements CSV
+#' @param save_summary Whether to write per-image summary CSV
+#' @param save_population_stats Whether to write a JSON population summary
+#' @return A list with detections, per-image summary, population stats, and output directory
+#' @export
+analyze_segmentation_dir <- function(input_dir,
+                                     model,
+                                     output_dir = "results/segmentation_batch",
+                                     save_visualizations = TRUE,
+                                     save_measurements = TRUE,
+                                     save_summary = TRUE,
+                                     save_population_stats = TRUE) {
+  if (!inherits(model, "PetrographyModel")) {
+    cli::cli_abort("model must be a PetrographyModel object from from_pretrained()")
   }
+  if (!isTRUE(model$is_segmentation)) {
+    cli::cli_abort("{.fn analyze_segmentation_dir} requires a segmentation model.")
+  }
+
+  fs::dir_create(output_dir)
+  overlay_dir <- fs::path(output_dir, "overlays")
+
+  detections <- predict_images(
+    input_dir = input_dir,
+    model = model,
+    use_slicing = FALSE,
+    output_dir = overlay_dir,
+    save_visualizations = save_visualizations
+  )
+
+  image_summary <- if (nrow(detections) > 0) {
+    summarize_by_image(detections)
+  } else {
+    tibble::tibble()
+  }
+  population_stats <- get_population_stats(detections)
+
+  if (save_measurements) {
+    readr::write_csv(detections, fs::path(output_dir, "measurements.csv"))
+  }
+  if (save_summary) {
+    readr::write_csv(image_summary, fs::path(output_dir, "image_summary.csv"))
+  }
+  if (save_population_stats) {
+    jsonlite::write_json(
+      population_stats,
+      fs::path(output_dir, "population_stats.json"),
+      pretty = TRUE,
+      auto_unbox = TRUE,
+      null = "null"
+    )
+  }
+
+  list(
+    detections = detections,
+    summary = image_summary,
+    population_stats = population_stats,
+    output_dir = output_dir
+  )
 }
 
 #' Evaluate detections with SAHI and COCO metrics
@@ -246,6 +334,12 @@ evaluate_model_sahi <- function(model,
 
   if (!inherits(model, "PetrographyModel")) {
     cli::cli_abort("model must be a PetrographyModel object from from_pretrained().")
+  }
+  if (isTRUE(model$is_segmentation) || is.null(model$sahi_model)) {
+    cli::cli_abort(c(
+      "{.fn evaluate_model_sahi} currently supports detection models only",
+      "i" = "Segmentation models are loaded without a SAHI wrapper, so this helper cannot evaluate them yet."
+    ))
   }
   if (!fs::file_exists(annotation_json)) {
     cli::cli_abort("Annotation file not found: {.path {annotation_json}}")
@@ -316,26 +410,41 @@ evaluate_model_sahi <- function(model,
 
     preds <- pred$object_prediction_list
     for (obj in preds) {
-      mask <- obj$mask$bool_mask
-      labeled_mask <- skimage$measure$label(mask)
-      storage.mode(labeled_mask) <- "integer"
-      props <- skimage$measure$regionprops(labeled_mask)
-      if (length(props) == 0) {
-        next
+      # SAHI's ObjectPrediction has .mask set only when the underlying model
+      # emits segmentation masks. Detection-only models (RF-DETR bbox head)
+      # leave .mask = None, so we can't run regionprops — read bbox directly.
+      has_mask <- !is.null(obj$mask) && !is.null(obj$mask$bool_mask)
+
+      if (has_mask) {
+        mask <- obj$mask$bool_mask
+        labeled_mask <- skimage$measure$label(mask)
+        storage.mode(labeled_mask) <- "integer"
+        props <- skimage$measure$regionprops(labeled_mask)
+        if (length(props) == 0) {
+          next
+        }
+        prop <- props[[1]]
+        bbox <- prop$bbox  # (min_row, min_col, max_row, max_col)
+        min_row <- as.numeric(bbox[[1]])
+        min_col <- as.numeric(bbox[[2]])
+        max_row <- as.numeric(bbox[[3]])
+        max_col <- as.numeric(bbox[[4]])
+      } else {
+        # Detection: SAHI's BoundingBox exposes minx/miny/maxx/maxy directly.
+        bb <- obj$bbox
+        if (is.null(bb)) next
+        min_col <- as.numeric(bb$minx)
+        min_row <- as.numeric(bb$miny)
+        max_col <- as.numeric(bb$maxx)
+        max_row <- as.numeric(bb$maxy)
       }
-      prop <- props[[1]]
-      bbox <- prop$bbox  # (min_row, min_col, max_row, max_col)
-      min_row <- as.numeric(bbox[[1]])
-      min_col <- as.numeric(bbox[[2]])
-      max_row <- as.numeric(bbox[[3]])
-      max_col <- as.numeric(bbox[[4]])
 
       width <- max_col - min_col
       height <- max_row - min_row
 
       coco_det <- list(
         image_id = as.integer(img_row$image_id),
-        category_id = as.integer(obj$category$id),
+        category_id = .prediction_category_id(model, obj$category$id),
         bbox = c(min_col, min_row, width, height),
         score = as.numeric(obj$score$value)
       )
@@ -406,10 +515,15 @@ evaluate_model_sahi <- function(model,
 }
 
 #' Evaluate model training
-#' Reads Detectron2 metrics.json and exports:
-#' - training_metrics.csv: losses, lr, etc.
-#' - validation_metrics.csv: aggregate COCO bbox and segm AP metrics
-#' - validation_classwise.csv: per-class AP metrics (when logged by evaluator)
+#'
+#' Parses RF-DETR training metrics and exports:
+#' - training_metrics.csv: per-epoch losses, learning rate, class error
+#' - validation_metrics.csv: per-epoch validation losses + AP/AR + summary map
+#' - validation_classwise.csv: per-class AP/precision/recall (when logged)
+#'
+#' Source-file preference (first one found wins):
+#'   1. `metrics.csv` — RF-DETR >= 1.6.0 (PyTorch Lightning CSVLogger)
+#'   2. `log.txt`     — RF-DETR <  1.6.0 (native training loop, JSONL)
 #' @param model_id Model ID (will be resolved from local board)
 #' @param model_dir Directory containing trained model (alternative to model_id)
 #' @param board Pins board (NULL = local board, only used if model_id provided)
@@ -441,26 +555,40 @@ evaluate_training <- function(model_id = NULL,
   # Create output directory
   fs::dir_create(output_dir)
 
-  # Look for training metrics
-  metrics_file <- fs::path(model_dir, "metrics.json")
+  # Prefer the normalized petrographer-owned summary and only fall back to raw
+  # RF-DETR artifacts when it is unavailable.
+  training_summary_file <- fs::path(model_dir, "training_summary.json")
+  csv_file     <- fs::path(model_dir, "metrics.csv")
+  log_file     <- fs::path(model_dir, "log.txt")
   results_file <- fs::path(model_dir, "results.json")
-  log_file <- fs::path(model_dir, "log.txt")
 
-  parsed <- list(training = tibble::tibble(), validation = tibble::tibble(), classwise = tibble::tibble())
-  if (fs::file_exists(metrics_file)) {
-    parsed <- parse_metrics(metrics_file)
-    # Save to CSV files
-    readr::write_csv(parsed$training, fs::path(output_dir, "training_metrics.csv"))
-    if (nrow(parsed$validation) > 0) readr::write_csv(parsed$validation, fs::path(output_dir, "validation_metrics.csv"))
-    if (nrow(parsed$classwise) > 0) readr::write_csv(parsed$classwise, fs::path(output_dir, "validation_classwise.csv"))
+  parsed <- list(training = tibble::tibble(),
+                 validation = tibble::tibble(),
+                 classwise = tibble::tibble())
+  metrics_source <- NA_character_
+  final_results <- NULL
+  if (fs::file_exists(training_summary_file)) {
+    training_summary <- jsonlite::read_json(training_summary_file, simplifyVector = FALSE)
+    parsed$training <- .records_to_tibble(training_summary$history$training)
+    parsed$validation <- .records_to_tibble(training_summary$history$validation)
+    parsed$classwise <- .records_to_tibble(training_summary$history$classwise)
+    metrics_source <- training_summary$metrics_source %||% "training_summary.json"
+    final_results <- training_summary$final_results %||% NULL
+  } else if (fs::file_exists(csv_file)) {
+    parsed <- parse_metrics(csv_file)
+    metrics_source <- "metrics.csv"
   } else if (fs::file_exists(log_file)) {
-    # Could add log parsing here if needed
-    warning("Only log.txt found - metrics.json preferred for analysis")
+    parsed <- parse_metrics(log_file)
+    metrics_source <- "log.txt"
   }
 
-  # Parse RF-DETR results.json (final evaluation metrics)
-  final_results <- NULL
-  if (fs::file_exists(results_file)) {
+  if (nrow(parsed$training)  > 0) readr::write_csv(parsed$training,   fs::path(output_dir, "training_metrics.csv"))
+  if (nrow(parsed$validation) > 0) readr::write_csv(parsed$validation, fs::path(output_dir, "validation_metrics.csv"))
+  if (nrow(parsed$classwise) > 0) readr::write_csv(parsed$classwise,  fs::path(output_dir, "validation_classwise.csv"))
+
+  # Parse RF-DETR results.json (final evaluation metrics) if the normalized
+  # summary did not already provide it.
+  if (is.null(final_results) && fs::file_exists(results_file)) {
     final_results <- jsonlite::read_json(results_file, simplifyVector = TRUE)
     # Save to CSV if it's a data frame
     if (is.data.frame(final_results) || is.list(final_results)) {
@@ -468,12 +596,14 @@ evaluate_training <- function(model_id = NULL,
     }
   }
 
-  # Generate enhanced summary
+  # total_epochs is the count of epoch rows parsed from metrics.csv or log.txt.
+  total_epochs <- nrow(parsed$training)
+
   summary <- list(
-    total_iterations = if (nrow(parsed$training) > 0) max(parsed$training$iteration, na.rm = TRUE) else 0,
+    total_epochs = total_epochs,
+    metrics_source = metrics_source,
     metrics_available = nrow(parsed$training) > 0,
     validation_metrics_available = nrow(parsed$validation) > 0,
-    validation_segm_available = any(grepl("segm", names(parsed$validation))),
     classwise_available = nrow(parsed$classwise) > 0,
     validation_evaluations = nrow(parsed$validation)
   )
@@ -493,19 +623,37 @@ evaluate_training <- function(model_id = NULL,
 
   # Print summary
   cli::cli_dl(c(
-    "Training iterations" = summary$total_iterations,
+    "Metrics source" = metrics_source %||% "<none>",
+    "Training epochs" = summary$total_epochs,
     "Validation evaluations" = summary$validation_evaluations,
-    "Segm metrics available" = if (isTRUE(summary$validation_segm_available)) "yes" else "no",
     "Classwise metrics available" = if (isTRUE(summary$classwise_available)) "yes" else "no",
     "Training records" = nrow(parsed$training),
     "Final results available" = if (!is.null(final_results)) "yes" else "no",
     "Output directory" = output_dir
   ))
 
-  if (nrow(parsed$training) > 0) {
-    final_metrics <- tail(parsed$training, 1)
-    if ("total_loss" %in% names(final_metrics)) {
-      cli::cli_alert_info("Final training loss: {round(final_metrics$total_loss, 4)}")
+  if (nrow(parsed$training) > 0 && "loss" %in% names(parsed$training)) {
+    final_loss <- utils::tail(parsed$training$loss, 1)
+    if (!is.na(final_loss)) {
+      cli::cli_alert_info("Final training loss: {round(final_loss, 4)}")
+    }
+  }
+
+  if (nrow(parsed$validation) > 0) {
+    final_val <- utils::tail(parsed$validation, 1)
+    # Canonical preference order across both source formats (metrics.csv, log.txt):
+    #   map / mAP_50_95 / ap  -> AP@[50:95]
+    #   ap50 / mAP_50         -> AP@50
+    pref <- c("mAP_50_95", "map", "ap", "ema_mAP_50_95")
+    chosen <- intersect(pref, names(final_val))
+    val <- NULL
+    label <- NULL
+    for (nm in chosen) {
+      v <- final_val[[nm]]
+      if (!is.na(v)) { val <- v; label <- nm; break }
+    }
+    if (!is.null(val)) {
+      cli::cli_alert_info("Final validation {label}: {round(val, 4)}")
     }
   }
 
@@ -528,4 +676,3 @@ evaluate_training <- function(model_id = NULL,
   cli::cli_alert_success("Training evaluation completed")
   return(result)
 }
-

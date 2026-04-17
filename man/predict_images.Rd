@@ -8,7 +8,7 @@ predict_images(
   input_dir,
   model,
   use_slicing = TRUE,
-  slice_size = 512,
+  slice_size = NULL,
   overlap = 0.2,
   output_dir = "results/batch",
   save_visualizations = TRUE
@@ -21,7 +21,7 @@ predict_images(
 
 \item{use_slicing}{Whether to use SAHI sliced inference (default: TRUE)}
 
-\item{slice_size}{Size of slices for SAHI in pixels (default: 512)}
+\item{slice_size}{Size of slices for SAHI in pixels (default: use model's resolution)}
 
 \item{overlap}{Overlap ratio between slices (default: 0.2)}
 

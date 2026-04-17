@@ -83,20 +83,35 @@ calculate_morphology_from_result <- function(result, image_path) {
 #'
 #' @param detections supervision.Detections object with masks.
 #' @param image_path Original image path.
+#' @param class_names_map Optional mapping of class id -> class name.
 #' @return A tibble with morphological properties per object.
 #' @keywords internal
-calculate_morphology_from_detections <- function(detections, image_path) {
+calculate_morphology_from_detections <- function(detections,
+                                                 image_path,
+                                                 class_names_map = NULL) {
   masks <- detections$mask
   n_det <- nrow(detections$xyxy)
   if (n_det == 0) return(tibble::tibble())
 
-  category_mapping <- detections$data
   class_ids <- as.integer(detections$class_id)
   confidences <- as.numeric(detections$confidence)
 
+  resolve_class_name <- function(class_id) {
+    if (!is.null(class_names_map)) {
+      name <- class_names_map[[as.character(class_id)]]
+      if (is.null(name)) {
+        name <- class_names_map[[class_id]]
+      }
+      if (!is.null(name)) {
+        return(as.character(name))
+      }
+    }
+    as.character(class_id)
+  }
+
   morphology_list <- vector("list", n_det)
   for (i in seq_len(n_det)) {
-    mask <- tryCatch(masks[i - 1L, , ], error = function(e) NULL)
+    mask <- tryCatch(masks[i, , ], error = function(e) NULL)
     if (is.null(mask) || !any(mask)) {
       # Skip empty/invalid masks
       next
@@ -109,11 +124,11 @@ calculate_morphology_from_detections <- function(detections, image_path) {
 
     if (length(props) == 0) {
       # Fallback to bbox
-      bbox <- as.numeric(detections$xyxy[i - 1L, ])
+      bbox <- as.numeric(detections$xyxy[i, ])
       width <- bbox[3] - bbox[1]
       height <- bbox[4] - bbox[2]
       morphology_list[[i]] <- list(
-        class_id = class_ids[i], class_name = as.character(class_ids[i]),
+        class_id = class_ids[i], class_name = resolve_class_name(class_ids[i]),
         confidence = confidences[i],
         area = width * height, perimeter = 2 * (width + height),
         centroid_x = (bbox[1] + bbox[3]) / 2, centroid_y = (bbox[2] + bbox[4]) / 2,
@@ -133,7 +148,7 @@ calculate_morphology_from_detections <- function(detections, image_path) {
 
     morphology_list[[i]] <- list(
       class_id = class_ids[i],
-      class_name = as.character(class_ids[i]),
+      class_name = resolve_class_name(class_ids[i]),
       confidence = confidences[i],
       area = area,
       perimeter = perim,

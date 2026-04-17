@@ -8,19 +8,20 @@ train_model(
   dataset_id = NULL,
   data_dir = NULL,
   model_id = NULL,
-  num_classes,
-  backbone = "resnet50",
-  freeze_at = 2,
-  max_iter = 2000,
+  model_variant = "nano",
+  resolution = NULL,
+  epochs = 10,
+  batch_size = NA,
+  grad_accum_steps = NA,
   learning_rate = NULL,
   device = "cuda",
-  eval_period = 1000,
-  checkpoint_period = 0,
-  ims_per_batch = NA,
+  use_amp = NULL,
+  amp_dtype = "bf16",
+  gradient_checkpointing = NULL,
   num_workers = NULL,
-  hpc_cpus_per_task = NULL,
-  hpc_mem = NULL,
-  gpus = 1
+  time_hours = 4,
+  validate_every = 2L,
+  early_stopping_patience = NULL
 )
 }
 \arguments{
@@ -30,41 +31,39 @@ train_model(
 
 \item{model_id}{Name for the trained model (used for pins). Defaults to \code{dataset_id} if not provided.}
 
-\item{num_classes}{Number of object classes in your dataset.}
+\item{model_variant}{RF-DETR model variant. Detection: "nano" (default), "small", "medium", "large". Segmentation: "seg_nano", "seg_small", "seg_medium", "seg_large", "seg_xlarge", "seg_2xlarge". Legacy: "seg_preview".}
 
-\item{backbone}{Model backbone: "resnet50" (default), "resnet101", "resnext101", or a full Detectron2 model zoo key.}
+\item{resolution}{Image resolution for training. Auto-detected from variant if not specified.}
 
-\item{freeze_at}{Freeze backbone up to this stage: 0 (freeze nothing), 1 (freeze stem), 2 (freeze stem + res2; default).
-Lower values train more layers = slower but better domain adaptation.}
+\item{epochs}{Number of training epochs. Default: 10.}
 
-\item{max_iter}{Maximum training iterations. Default: 2000.}
+\item{batch_size}{Batch size for training. If NA (default), uses 2.}
 
-\item{learning_rate}{Learning rate for the detection head. If NULL (default), uses smart
-auto-scaling based on \code{freeze_at} and batch size. Backbone automatically gets 0.1x this rate.
-If a number is provided, uses that exact value for the head (backbone still gets 0.1x).}
+\item{grad_accum_steps}{Gradient accumulation steps. If NA (default), auto-calculated as 16 / batch_size for effective batch size of 16.}
+
+\item{learning_rate}{Learning rate. If NULL (default), uses model default.}
 
 \item{device}{Device for local training: 'cpu', 'cuda', or 'mps' (default: 'cuda').}
 
-\item{eval_period}{Validation evaluation frequency in iterations (default: 500).}
+\item{use_amp}{Use automatic mixed precision training (default: TRUE for CUDA, FALSE otherwise). Reduces memory usage by ~40\%.}
 
-\item{checkpoint_period}{Checkpoint saving frequency (0 = final only; > 0 = every N iters).}
+\item{amp_dtype}{AMP dtype: 'bf16' (recommended for modern GPUs) or 'fp16' (default: 'bf16').}
 
-\item{ims_per_batch}{Total images per iteration across all GPUs. If NA (default), uses 2 images per GPU.}
+\item{gradient_checkpointing}{Enable gradient checkpointing (default: FALSE). Reduces memory usage by ~30\%.}
 
-\item{num_workers}{DataLoader workers per process (Detectron2). If NULL (default), set to images per GPU.}
+\item{num_workers}{Number of data loading workers (default: 8).}
 
-\item{hpc_cpus_per_task}{Optional SLURM cpus-per-task hint for HPC training.}
+\item{time_hours}{Time limit for HPC training in hours (default: 3). Examples: 4 = 4 hours, 0.5 = 30 minutes, 1.5 = 1.5 hours. Ignored for local training.}
 
-\item{hpc_mem}{Optional SLURM memory hint for HPC training (e.g., "24gb", "96gb").}
+\item{validate_every}{Validate every N epochs (default: 1). Set to NULL to use model default.}
 
-\item{gpus}{Number of GPUs for HPC training (default: 1; ignored for local).}
+\item{early_stopping_patience}{Stop training if validation loss doesn't improve for N epochs (default: 10). Set to NULL to disable early stopping.}
 }
 \value{
 Model ID (can be loaded with \code{from_pretrained(model_id)}).
 }
 \description{
-Orchestrates local or HPC training using Detectron2. R computes batch size,
-workers, and a batch-scaled learning rate, then calls the Python trainer.
+Orchestrates local or HPC training using RF-DETR.
 Models are automatically pinned to the local board (.petrographer/) for versioning.
 }
 \details{

@@ -48,17 +48,17 @@ train_model <- function(dataset_id = NULL,
                         use_amp = NULL,
                         amp_dtype = "bf16",
                         gradient_checkpointing = NULL,
-                        num_workers = 8L,
-                        time_hours = 3,
-                        validate_every = 1L,
-                        early_stopping_patience = 10L) {
+                        num_workers = NULL,
+                        time_hours = 4,
+                        validate_every = 2L,
+                        early_stopping_patience = NULL) {
 
   # Validate model variant
   valid_variants <- c("nano", "small", "medium", "large",
                       "seg_nano", "seg_small", "seg_medium", "seg_large",
                       "seg_xlarge", "seg_2xlarge", "seg_preview")
   model_variant <- match.arg(model_variant, valid_variants)
-  is_seg <- startsWith(model_variant, "seg")
+  device <- match.arg(device, c("cpu", "cuda", "mps"))
 
   # Resolution validation
   if (!is.null(resolution) && resolution %% 32 != 0) {
@@ -76,17 +76,18 @@ train_model <- function(dataset_id = NULL,
     gradient_checkpointing <- FALSE  # Disabled by default
   }
 
-  # Auto-calculate batch size and gradient accumulation
-  # Target effective batch size: batch_size × grad_accum_steps = 16
-  if (is.na(batch_size)) {
-    batch_size <- 2
-  }
-
-  if (is.na(grad_accum_steps)) {
-    grad_accum_steps <- max(1, round(16 / batch_size))
-    cli::cli_alert_info(
-      "Auto-calculated grad_accum_steps = {grad_accum_steps} (effective batch size: {batch_size * grad_accum_steps})"
-    )
+  # Batch size: "auto" lets rfdetr probe GPU, integer sets explicit size, NA defaults to "auto"
+  if (is.na(batch_size) || identical(batch_size, "auto")) {
+    batch_size <- "auto"
+    if (is.na(grad_accum_steps)) grad_accum_steps <- 1L
+    cli::cli_alert_info("Using auto batch size (rfdetr will probe GPU capacity)")
+  } else {
+    if (is.na(grad_accum_steps)) {
+      grad_accum_steps <- max(1, round(16 / batch_size))
+      cli::cli_alert_info(
+        "Auto-calculated grad_accum_steps = {grad_accum_steps} (effective batch size: {batch_size * grad_accum_steps})"
+      )
+    }
   }
 
   # Resolve dataset (must provide one or the other)
@@ -216,6 +217,11 @@ prepare_training_config <- function(data_dir,
     "local"
   }
 
+  # Default num_workers: 8 for HPC, 2 for local
+  if (is.null(num_workers)) {
+    num_workers <- if (training_mode == "hpc") 8L else 2L
+  }
+
   data_dir <- fs::path_abs(fs::path_norm(data_dir))
 
   run_id <- format(Sys.time(), "%Y%m%d%H%M%S")
@@ -286,12 +292,11 @@ prepare_training_config <- function(data_dir,
 }
 
 resolve_batch_size <- function(batch_size) {
+  if (identical(batch_size, "auto")) return("auto")
   effective <- batch_size
-  if (is.na(effective)) {
-    effective <- 2L  # Default batch size
-  }
+  if (is.na(effective)) return("auto")
   if (!is.numeric(effective) || length(effective) != 1 || is.na(effective) || effective < 1) {
-    cli::cli_abort("batch_size must be a positive integer or NA for default (2).")
+    cli::cli_abort("batch_size must be a positive integer, 'auto', or NA.")
   }
   as.integer(effective)
 }
@@ -316,15 +321,12 @@ check_batch_size_for_images <- function(data_dir, batch_size, use_amp, gradient_
   }
 
   # Sample up to 5 images to check size
-  sample_files <- head(image_files, 5)
+  sample_files <- utils::head(image_files, 5)
 
   tryCatch({
-    # Use magick to read image dimensions quickly
-    if (!requireNamespace("magick", quietly = TRUE)) {
-      return(invisible(NULL))
-    }
-
-    img_info <- magick::image_info(magick::image_read(sample_files[1]))
+    # Probe image dimensions via inst/python/visualize.py (OpenCV under the hood)
+    # - avoids the magick dependency we dropped along with the annotation code.
+    img_info <- visualize_py$image_dimensions(as.character(sample_files[1]))
     max_dim <- max(img_info$width, img_info$height)
 
     # Batch size recommendations based on resolution and memory optimizations
@@ -447,20 +449,54 @@ finalize_trained_model <- function(model_dir, config, duration_mins) {
     metadata$training_mode <- "Local"
   }
 
-  # Add metrics if available
-  metrics_path <- fs::path(model_dir, "metrics.json")
-  if (fs::file_exists(metrics_path)) {
-    metrics <- tryCatch({
-      parsed <- parse_metrics(metrics_path)
-      list(
-        validation = if (nrow(parsed$validation) > 0) as.list(parsed$validation[nrow(parsed$validation), , drop = FALSE]) else NULL,
-        training = if (nrow(parsed$training) > 0) as.list(parsed$training[nrow(parsed$training), , drop = FALSE]) else NULL
-      )
-    }, error = function(e) NULL)
+  # Build the stable petrographer-owned training summary first. Other R code
+  # should prefer this file over re-parsing upstream RF-DETR logs.
+  csv_path     <- fs::path(model_dir, "metrics.csv")
+  log_path     <- fs::path(model_dir, "log.txt")
+  metrics_source <- if (fs::file_exists(csv_path)) csv_path
+                   else if (fs::file_exists(log_path)) log_path
+                   else NULL
+  parsed_metrics <- list(
+    training = tibble::tibble(),
+    validation = tibble::tibble(),
+    classwise = tibble::tibble()
+  )
+  if (!is.null(metrics_source)) {
+    parsed_metrics <- tryCatch(
+      parse_metrics(metrics_source),
+      error = function(e) parsed_metrics
+    )
+    metrics <- list(
+      validation = if (nrow(parsed_metrics$validation) > 0) as.list(parsed_metrics$validation[nrow(parsed_metrics$validation), , drop = FALSE]) else NULL,
+      training = if (nrow(parsed_metrics$training) > 0) as.list(parsed_metrics$training[nrow(parsed_metrics$training), , drop = FALSE]) else NULL
+    )
     if (!is.null(metrics)) {
       metadata$metrics <- metrics
     }
   }
+
+  training_summary <- .write_training_summary(
+    model_dir = model_dir,
+    config = config,
+    duration_mins = duration_mins,
+    parsed_metrics = parsed_metrics,
+    metrics_source = metrics_source,
+    python_metadata = python_metadata
+  )
+  metadata$catalog_summary <- .build_catalog_summary(
+    config = config,
+    duration_mins = duration_mins,
+    python_metadata = python_metadata,
+    parsed_metrics = parsed_metrics,
+    training_summary = training_summary
+  )
+  .write_model_manifest(
+    model_dir = model_dir,
+    config = config,
+    duration_mins = duration_mins,
+    python_metadata = python_metadata,
+    training_summary = training_summary
+  )
 
   # Pin the model to model board
   board <- .get_model_board()
@@ -507,26 +543,9 @@ run_local_training <- function(config) {
 }
 
 run_hpc_training <- function(config) {
-  train_model_hpc(
-    data_dir                = config$data_dir,
-    dataset_id              = config$dataset_id,
-    model_id                = config$model_id,
-    run_id                  = config$run_id,
-    model_variant           = config$model_variant,
-    resolution              = config$resolution,
-    epochs                  = config$epochs,
-    batch_size              = config$batch_size,
-    grad_accum_steps        = config$grad_accum_steps,
-    learning_rate           = config$learning_rate,
-    workspace_dir           = config$workspace_dir,
-    use_amp                 = config$use_amp,
-    amp_dtype               = config$amp_dtype,
-    gradient_checkpointing  = config$gradient_checkpointing,
-    num_workers             = config$num_workers,
-    time_hours              = config$time_hours,
-    validate_every          = config$validate_every,
-    early_stopping_patience = config$early_stopping_patience
-  )
+  handle <- submit_hpc_training(config)
+  handle <- wait_hpc_training(handle)
+  collect_hpc_training(handle)
 }
 
 # ============================================================================
@@ -550,7 +569,7 @@ train_model_local <- function(data_dir, model_id, model_variant, resolution, epo
   dataset_dir <- fs::path(workspace_dir, "dataset", dataset_id_from_tar)
   fs::dir_create(dataset_dir)
 
-  untar_result <- untar(
+  untar_result <- utils::untar(
     tarfile = data_dir,
     exdir = dataset_dir,
     tar = "internal"
@@ -588,33 +607,31 @@ train_model_local <- function(data_dir, model_id, model_variant, resolution, epo
     "--device", device
   )
 
-  # Add learning rate if specified
   if (!is.null(learning_rate) && !is.na(learning_rate)) {
     args <- c(args, "--learning-rate", as.character(learning_rate))
   }
 
-  # Add resolution if specified
   if (!is.null(resolution)) {
     args <- c(args, "--resolution", as.character(resolution))
   }
 
-  # Add memory optimization flags
-  if (use_amp) {
-    args <- c(args, "--use-amp", "--amp-dtype", amp_dtype)
-    cli::cli_alert_info("Memory optimization: AMP enabled (dtype={amp_dtype})")
-  }
   if (gradient_checkpointing) {
     args <- c(args, "--gradient-checkpointing")
-    cli::cli_alert_info("Memory optimization: Gradient checkpointing enabled")
   }
 
-  # Add num_workers
+  if (use_amp) {
+    args <- c(args, "--use-amp", "--amp-dtype", amp_dtype)
+  }
+
   args <- c(args, "--num-workers", as.character(num_workers))
 
-  # Add validation settings
-  if (!is.null(validate_every)) {
-    args <- c(args, "--validate-every", as.character(validate_every))
-  }
+  eval_interval <- validate_every %||% 2L
+  args <- c(args,
+    "--eval-interval", as.character(eval_interval),
+    "--checkpoint-interval", as.character(eval_interval),
+    "--eval-max-dets", "500"
+  )
+
   if (!is.null(early_stopping_patience)) {
     args <- c(args, "--early-stopping-patience", as.character(early_stopping_patience))
   }
@@ -636,6 +653,89 @@ train_model_hpc <- function(data_dir, dataset_id, model_id, run_id, model_varian
                             workspace_dir, use_amp, amp_dtype,
                             gradient_checkpointing, num_workers, time_hours, validate_every,
                             early_stopping_patience) {
+  config <- list(
+    data_dir = data_dir,
+    dataset_id = dataset_id,
+    model_id = model_id,
+    run_id = run_id,
+    model_variant = model_variant,
+    resolution = resolution,
+    epochs = epochs,
+    batch_size = batch_size,
+    grad_accum_steps = grad_accum_steps,
+    learning_rate = learning_rate,
+    workspace_dir = workspace_dir,
+    use_amp = use_amp,
+    amp_dtype = amp_dtype,
+    gradient_checkpointing = gradient_checkpointing,
+    num_workers = num_workers,
+    time_hours = time_hours,
+    validate_every = validate_every,
+    early_stopping_patience = early_stopping_patience
+  )
+  handle <- submit_hpc_training(config)
+  handle <- wait_hpc_training(handle)
+  collect_hpc_training(handle)
+}
+
+# Internal: submit HPC training without waiting for completion
+submit_hpc_training <- function(config) {
+  setup <- hpc_training_setup(
+    data_dir = config$data_dir,
+    dataset_id = config$dataset_id,
+    model_id = config$model_id,
+    run_id = config$run_id,
+    model_variant = config$model_variant,
+    resolution = config$resolution,
+    epochs = config$epochs,
+    batch_size = config$batch_size,
+    grad_accum_steps = config$grad_accum_steps,
+    learning_rate = config$learning_rate,
+    workspace_dir = config$workspace_dir,
+    use_amp = config$use_amp,
+    amp_dtype = config$amp_dtype,
+    gradient_checkpointing = config$gradient_checkpointing,
+    num_workers = config$num_workers,
+    time_hours = config$time_hours,
+    validate_every = config$validate_every,
+    early_stopping_patience = config$early_stopping_patience
+  )
+
+  cli::cli_alert_info("Uploading artifacts")
+  hpc_upload_artifacts(setup)
+
+  handle <- list(
+    config = config,
+    setup = setup,
+    job = hpc_submit_job(setup),
+    submitted_at = Sys.time()
+  )
+  class(handle) <- "petrographer_hpc_training"
+  handle
+}
+
+# Internal: wait for a submitted HPC training job
+wait_hpc_training <- function(handle) {
+  stopifnot(inherits(handle, "petrographer_hpc_training"))
+  cli::cli_alert_info("Waiting for HPC job to complete...")
+  hipergator::hpg_wait(handle$job)
+  handle$completed_at <- Sys.time()
+  handle
+}
+
+# Internal: download completed HPC training results
+collect_hpc_training <- function(handle) {
+  stopifnot(inherits(handle, "petrographer_hpc_training"))
+  cli::cli_alert_info("Downloading results")
+  hpc_download_results(handle$setup)
+}
+
+# Internal: build HPC training setup
+hpc_training_setup <- function(data_dir, dataset_id, model_id, run_id, model_variant,
+                               resolution, epochs, batch_size, grad_accum_steps, learning_rate,
+                               workspace_dir, use_amp, amp_dtype,
+                               gradient_checkpointing, num_workers, time_hours, validate_every,
+                               early_stopping_patience) {
 
   # Use existing hipergator configuration
   config <- hipergator::hpg_config()
@@ -650,7 +750,7 @@ train_model_hpc <- function(data_dir, dataset_id, model_id, run_id, model_varian
 
   # HPC resource defaults (single GPU only)
   cpus <- 16
-  memory <- "64gb"
+  memory <- "128gb"
 
   # Convert time_hours to HH:MM:SS format
   hours <- floor(time_hours)
@@ -677,53 +777,53 @@ train_model_hpc <- function(data_dir, dataset_id, model_id, run_id, model_varian
   remote_script <- "scripts/train.py"
   remote_output_dir <- fs::path("models", model_id, run_id, "output")
 
-  # Build training arguments
+  # Build training arguments (rfdetr >= 1.6.0, PTL-based)
   training_args <- c(
     "--dataset-dir", remote_dataset_dir,
     "--output-dir", remote_output_dir,
     "--model-variant", model_variant,
     "--epochs", as.character(epochs),
     "--batch-size", as.character(batch_size),
-    "--grad-accum-steps", as.character(grad_accum_steps),
-    "--device", "cuda"
+    "--grad-accum-steps", as.character(grad_accum_steps)
   )
 
-  # Add learning rate if specified
   if (!is.null(learning_rate) && !is.na(learning_rate)) {
     training_args <- c(training_args, "--learning-rate", as.character(learning_rate))
   }
 
-  # Add resolution if specified
   if (!is.null(resolution)) {
     training_args <- c(training_args, "--resolution", as.character(resolution))
   }
 
-  # Add memory optimization flags
-  if (use_amp) {
-    training_args <- c(training_args, "--use-amp", "--amp-dtype", amp_dtype)
-  }
   if (gradient_checkpointing) {
     training_args <- c(training_args, "--gradient-checkpointing")
   }
 
-  # Add num_workers
-  training_args <- c(training_args, "--num-workers", as.character(num_workers))
+  eval_interval <- validate_every %||% 5L
+  training_args <- c(training_args,
+    "--num-workers", as.character(num_workers),
+    "--eval-interval", as.character(eval_interval),
+    "--checkpoint-interval", as.character(eval_interval),
+    "--eval-max-dets", "500"
+  )
 
-  # Add validation settings
-  if (!is.null(validate_every)) {
-    training_args <- c(training_args, "--validate-every", as.character(validate_every))
-  }
   if (!is.null(early_stopping_patience)) {
     training_args <- c(training_args, "--early-stopping-patience", as.character(early_stopping_patience))
   }
 
-  # Extract tar.gz before training
+  # Extract tar.gz then stage to $SLURM_TMPDIR for fast local I/O
+  # HiPerGator: /blue is parallel NFS (slow for small files), $SLURM_TMPDIR is local NVMe
+  local_dataset_dir <- paste0("$SLURM_TMPDIR/", basename(remote_dataset_dir))
   extract_cmd <- sprintf(
-    "mkdir -p %s && tar -xzf %s -C %s 2>/dev/null",
+    "mkdir -p %s && tar -xzf %s -C %s 2>/dev/null && cp -r %s %s && echo 'Dataset staged to local NVMe'",
     remote_dataset_dir,
     remote_dataset_tar,
-    remote_dataset_dir
+    remote_dataset_dir,
+    remote_dataset_dir,
+    "$SLURM_TMPDIR/"
   )
+  # Point training at the local copy
+  training_args[which(training_args == remote_dataset_dir)] <- local_dataset_dir
   training_cmd <- paste("python", remote_script, paste(training_args, collapse = " "))
   command <- paste(extract_cmd, "&&", training_cmd)
 
@@ -758,22 +858,7 @@ train_model_hpc <- function(data_dir, dataset_id, model_id, run_id, model_varian
     python_src = python_src
   )
 
-  # Upload artifacts
-  cli::cli_alert_info("Uploading artifacts")
-  hpc_upload_artifacts(setup)
-
-  # Submit job
-  job <- hpc_submit_job(setup)
-
-  # Wait for completion
-  cli::cli_alert_info("Waiting for HPC job to complete...")
-  hipergator::hpg_wait(job)
-
-  # Download results
-  cli::cli_alert_info("Downloading results")
-  download_dir <- hpc_download_results(setup)
-
-  return(download_dir)
+  setup
 }
 
 #' Upload artifacts to HPC
@@ -818,7 +903,12 @@ hpc_download_results <- function(setup) {
 
   # Download essential files
   required_files <- c("checkpoint_best_total.pth", "metadata.json")
-  optional_files <- c("log.txt", "metrics.json", "metrics_plot.png", "results.json")
+  # Optional files grouped by RF-DETR era - any one complete set is fine.
+  # PTL set is produced by RF-DETR >= 1.6.0 (PyTorch Lightning CSVLogger).
+  # Native set is produced by RF-DETR <  1.6.0 (native training loop).
+  optional_ptl    <- c("metrics.csv", "hparams.yaml")
+  optional_native <- c("log.txt", "metrics_plot.png", "results.json")
+  optional_files  <- c(optional_ptl, optional_native)
 
   # Download required files (fail if missing)
   for (file in required_files) {
@@ -832,16 +922,29 @@ hpc_download_results <- function(setup) {
     })
   }
 
-  # Download optional files (warn if missing)
+  # Download optional files silently, then report once at the end.
+  got <- character(0)
   for (file in optional_files) {
     remote_file <- fs::path(setup$remote$output, file)
     local_file <- fs::path(local_download_dir, file)
 
-    tryCatch({
+    ok <- tryCatch({
       hipergator::hpg_download(setup$target, remote_file, local_file, quiet = TRUE)
-    }, error = function(e) {
-      cli::cli_alert_warning("Optional file {.path {file}} not available")
-    })
+      TRUE
+    }, error = function(e) FALSE)
+    if (ok) got <- c(got, file)
+  }
+
+  got_ptl    <- intersect(optional_ptl, got)
+  got_native <- intersect(optional_native, got)
+  if (length(got_ptl) > 0L) {
+    cli::cli_alert_info("Metrics artifacts (PTL): {.file {got_ptl}}")
+  } else if (length(got_native) > 0L) {
+    cli::cli_alert_info("Metrics artifacts (native loop): {.file {got_native}}")
+  } else {
+    cli::cli_alert_warning(
+      "No metrics artifacts found in HPC output - training curves will be unavailable."
+    )
   }
 
   # Verify required files

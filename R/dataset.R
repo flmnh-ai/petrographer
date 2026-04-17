@@ -2,18 +2,72 @@
 # Dataset validation and summary helpers
 # ============================================================================
 
+#' Resolve a dataset source (directory or .tar.gz) to an extracted directory
+#'
+#' Accepts either a dataset directory or a `.tar.gz` / `.tgz` archive and
+#' returns a path to an extracted dataset directory. Archives are extracted
+#' once per session into a cache dir keyed on path + mtime, so subsequent
+#' calls on the same archive reuse the extraction instead of re-untarring.
+#'
+#' @param data_source Path to a dataset directory or archive
+#' @return Absolute path to a dataset directory
+#' @keywords internal
+.resolve_data_dir <- function(data_source) {
+  data_source <- as.character(data_source)
+
+  if (fs::dir_exists(data_source)) {
+    return(fs::path_abs(fs::path_norm(data_source)))
+  }
+
+  if (!fs::file_exists(data_source)) {
+    cli::cli_abort("Dataset source not found: {.path {data_source}}")
+  }
+
+  if (!grepl("\\.tar\\.gz$|\\.tgz$", data_source)) {
+    cli::cli_abort(c(
+      "Dataset source must be a directory or a .tar.gz/.tgz archive",
+      "x" = "Got: {.path {data_source}}"
+    ))
+  }
+
+  # Session-scoped cache keyed on path + mtime. A freshly repinned archive
+  # will have a new mtime and so will trigger a re-extract.
+  mtime <- as.integer(fs::file_info(data_source)$modification_time)
+  base <- tools::file_path_sans_ext(tools::file_path_sans_ext(fs::path_file(data_source)))
+  cache_dir <- fs::path(tempdir(), sprintf("petrographer-dataset-%s-%d", base, mtime))
+  marker <- fs::path(cache_dir, ".extracted")
+
+  if (fs::file_exists(marker)) {
+    cli::cli_alert_info("Reusing extracted dataset cache: {.path {cache_dir}}")
+    return(fs::path_abs(cache_dir))
+  }
+
+  cli::cli_alert_info("Extracting {.path {fs::path_file(data_source)}}...")
+  fs::dir_create(cache_dir, recurse = TRUE)
+  untar_result <- utils::untar(data_source, exdir = cache_dir, tar = "internal")
+  if (untar_result != 0) {
+    cli::cli_abort("Failed to extract archive: {.path {data_source}}")
+  }
+  fs::file_create(marker)
+
+  fs::path_abs(cache_dir)
+}
+
 #' Validate a COCO-style dataset directory
 #'
 #' Performs existence checks for expected splits and annotations, then runs
 #' annotation diagnostics (counts, size distribution, potential issues) for
 #' each split.
 #'
-#' @param data_dir Directory containing 'train' and 'valid' subdirectories
+#' @param data_dir Directory containing 'train' and 'valid' subdirectories, or
+#'   a `.tar.gz` / `.tgz` archive thereof (e.g. the path returned by
+#'   [get_training_dataset()]). Archives are transparently extracted into a
+#'   session-scoped cache.
 #' @param quiet If TRUE, suppress CLI output while still returning diagnostics
 #' @return A list with validation flags, counts, size metrics, and diagnostics
 #' @export
 validate_dataset <- function(data_dir, quiet = FALSE) {
-  data_dir <- fs::path_abs(fs::path_norm(data_dir))
+  data_dir <- .resolve_data_dir(data_dir)
 
   expected_splits <- c("train", "valid")
   missing_dirs <- expected_splits[!fs::dir_exists(fs::path(data_dir, expected_splits))]
@@ -242,7 +296,7 @@ annotation_diagnostics <- function(annotation_json,
 
     cli::cli_h3("Object Size Distribution")
     if (nrow(bbox_summary_tbl) > 0) {
-      formatted <- setNames(format(round(bbox_summary_tbl$value, 1), trim = TRUE), bbox_summary_tbl$stat)
+      formatted <- stats::setNames(format(round(bbox_summary_tbl$value, 1), trim = TRUE), bbox_summary_tbl$stat)
       cli::cli_dl(formatted)
     } else {
       cli::cli_alert_info("No bounding boxes available")
@@ -271,7 +325,7 @@ annotation_diagnostics <- function(annotation_json,
   tiny_objects <- if (length(bbox_areas) == 0) 0 else sum(bbox_areas < tiny_threshold, na.rm = TRUE)
   if (tiny_objects > n_annotations * 0.2) {
     msg <- paste0(tiny_objects, " objects are very small (<", tiny_threshold,
-                  "px²) - ", if (n_annotations > 0) round(100 * tiny_objects / n_annotations, 1) else 0, "%")
+                  "px^2) - ", if (n_annotations > 0) round(100 * tiny_objects / n_annotations, 1) else 0, "%")
     if (isTRUE(verbose)) cli::cli_alert_warning(msg)
     warnings <- c(warnings, list(tiny_objects = msg))
   }
@@ -449,21 +503,18 @@ slice_dataset <- function(input_dir,
 #' Pins a COCO-format dataset directory to a pins board for versioning and reuse.
 #' The dataset is compressed as tar.gz before pinning.
 #'
-#' @param data_dir Path to dataset directory
+#' @param data_dir Path to dataset directory, or a `.tar.gz` / `.tgz` archive
+#'   (transparently extracted before re-pinning).
 #' @param dataset_id Name for the pinned dataset
 #' @param board Pins board (NULL = local board at .petrographer/)
 #' @param metadata Optional metadata list
 #' @export
 pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
-  if (!fs::dir_exists(data_dir)) {
-    cli::cli_abort("Dataset directory not found: {.path {data_dir}}")
-  }
+  data_dir <- .resolve_data_dir(data_dir)
 
-  data_dir <- fs::path_abs(fs::path_norm(data_dir))
-
-  # Validate dataset structure FIRST
+  # Validate dataset structure FIRST and capture statistics
   cli::cli_alert_info("Validating dataset structure...")
-  validate_dataset(data_dir, quiet = TRUE)
+  dataset_info <- validate_dataset(data_dir, quiet = TRUE)
 
   if (is.null(board)) {
     board <- .get_dataset_board()
@@ -477,11 +528,18 @@ pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
 
   tar_file <- fs::path(temp_dir, paste0(dataset_id, ".tar.gz"))
 
-  # Use R's tar() with -C flag to tar only train/ and valid/ subdirectories
-  # Result: tar contains train/, valid/ at root (no parent directory)
-  tar_result <- tar(
+  # Find all dataset splits (train, valid, test) that exist
+  # Include test/ if present (required by RF-DETR)
+  dataset_splits <- c("train", "valid", "test")
+  existing_splits <- dataset_splits[fs::dir_exists(fs::path(data_dir, dataset_splits))]
+
+  cli::cli_alert_info("Archiving splits: {paste(existing_splits, collapse = ', ')}")
+
+  # Use R's tar() with -C flag to tar dataset subdirectories
+  # Result: tar contains train/, valid/, test/ (if present) at root
+  tar_result <- utils::tar(
     tarfile = tar_file,
-    files = c("train", "valid"),
+    files = existing_splits,
     compression = "gzip",
     tar = sprintf("tar -C %s", shQuote(data_dir))
   )
@@ -490,15 +548,25 @@ pin_dataset <- function(data_dir, dataset_id, board = NULL, metadata = list()) {
     cli::cli_abort("Failed to create tar.gz archive")
   }
 
+  # Add dataset statistics to metadata
   metadata$pinned <- Sys.time()
   metadata$compressed <- TRUE
   metadata$original_path <- as.character(data_dir)
+  metadata$size_mb <- dataset_info$size_mb
+  metadata$splits <- existing_splits
+
+  # Add image counts per split
+  for (split in existing_splits) {
+    if (!is.null(dataset_info$splits[[split]])) {
+      metadata[[paste0("num_images_", split)]] <- dataset_info$splits[[split]]$images
+    }
+  }
 
   # Pin the tar.gz file
   cli::cli_alert_info("Pinning to board...")
   pins::pin_upload(board, tar_file, name = dataset_id, metadata = metadata)
 
-  cli::cli_alert_success("Pinned dataset {.strong {dataset_id}} ({fs::file_size(tar_file) |> fs_bytes() |> format()})")
+  cli::cli_alert_success("Pinned dataset {.strong {dataset_id}} ({format(fs::file_size(tar_file))})")
   invisible(dataset_id)
 }
 

@@ -1,0 +1,311 @@
+---
+title: "Train RF-DETR Model"
+format:
+  html:
+    toc: true
+params:
+  task: "detection"           # detection | segmentation
+  dataset_id: "inclusions"
+  data_dir: "data/processed/inclusions_sliced"
+  dataset_description: "Pinned training dataset"
+  pin_dataset_first: true
+  model_id: null
+  model_variant: "small"      # detection: nano/small/medium/large; segmentation: seg_nano/seg_small/seg_medium/seg_large/seg_xlarge/seg_2xlarge/seg_preview
+  epochs: 100
+  batch_size: "auto"
+  time_hours: 4
+  validate_every: 2
+  early_stopping_patience: null
+  confidence: 0.5
+  device: "cpu"
+  resolution: null
+  slice_size: 640
+  overlap: 0.2
+  max_dets: 300
+  test_image_index: 1
+  use_hpc: false
+  hpc_host: null
+  hpc_base_dir: null
+---
+
+Train one RF-DETR model at a time with a shared workflow for detection and
+segmentation. Set `params$task` and `params$model_variant` to choose the path:
+
+- `task = "detection"` for boxes plus SAHI sliced inference and COCO evaluation
+- `task = "segmentation"` for masks plus morphology analysis
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(fs)
+library(here)
+library(petrographer)
+
+task <- match.arg(params$task, c("detection", "segmentation"))
+
+valid_variants <- if (identical(task, "detection")) {
+  c("nano", "small", "medium", "large")
+} else {
+  c("seg_nano", "seg_small", "seg_medium", "seg_large",
+    "seg_xlarge", "seg_2xlarge", "seg_preview")
+}
+
+if (!params$model_variant %in% valid_variants) {
+  stop(
+    sprintf(
+      "model_variant '%s' is not valid for task '%s'. Valid choices: %s",
+      params$model_variant,
+      task,
+      paste(valid_variants, collapse = ", ")
+    )
+  )
+}
+
+if (isTRUE(params$use_hpc)) {
+  if (!requireNamespace("hipergator", quietly = TRUE)) {
+    stop("The hipergator package is required when use_hpc = TRUE.")
+  }
+  hipergator::hpg_configure(
+    host = params$hpc_host,
+    base_dir = params$hpc_base_dir
+  )
+}
+
+data_dir <- here(params$data_dir)
+model_id <- params$model_id %||% paste(params$dataset_id, params$model_variant, sep = "_")
+out_dir <- here("results", model_id)
+dir_create(out_dir)
+```
+
+## Dataset
+
+Validate the dataset. If `pin_dataset_first = TRUE`, the notebook also pins the
+dataset so training stays reproducible and the model manifest can record the
+dataset id/version used for the run.
+
+```{r dataset}
+validate_dataset(data_dir)
+
+if (isTRUE(params$pin_dataset_first)) {
+  pin_dataset(
+    data_dir = data_dir,
+    dataset_id = params$dataset_id,
+    metadata = list(
+      description = params$dataset_description
+    )
+  )
+}
+```
+
+```{r preview-annotations, fig.cap="Training sample with ground-truth annotations"}
+train_images <- dir_ls(path(data_dir, "train"), glob = "*.jpg")
+if (!length(train_images)) {
+  train_images <- dir_ls(path(data_dir, "train"), glob = "*.png")
+}
+
+stopifnot(length(train_images) > 0)
+
+pg_plot_annotations(
+  image_path = train_images[[1]],
+  annotation_json = path(data_dir, "train", "_annotations.coco.json")
+)
+```
+
+## Training
+
+`train_model()` auto-dispatches between local and HPC training. The trained
+model is pinned automatically to `.petrographer/models/` and now writes a
+stable `manifest.json` and `training_summary.json` alongside the RF-DETR
+artifacts.
+
+```{r train}
+model_id <- train_model(
+  dataset_id = params$dataset_id,
+  model_id = model_id,
+  model_variant = params$model_variant,
+  resolution = params$resolution,
+  epochs = params$epochs,
+  batch_size = params$batch_size,
+  time_hours = params$time_hours,
+  validate_every = params$validate_every,
+  early_stopping_patience = params$early_stopping_patience
+)
+```
+
+## Training Curves
+
+`evaluate_training()` prefers the petrographer-owned `training_summary.json`
+and falls back to upstream RF-DETR logs only if needed.
+
+```{r curves}
+eval_result <- evaluate_training(model_id)
+
+have_train <- nrow(eval_result$training_data) > 0 &&
+  "epoch" %in% names(eval_result$training_data)
+
+if (have_train) {
+  main_losses <- c("loss", "loss_ce", "loss_bbox", "loss_giou")
+
+  train_long <- eval_result$training_data |>
+    select(epoch, any_of(main_losses)) |>
+    pivot_longer(-epoch, names_to = "loss_type", values_to = "value") |>
+    mutate(split = "train")
+
+  val_long <- if (!is.null(eval_result$validation_data)) {
+    eval_result$validation_data |>
+      select(epoch, any_of(main_losses)) |>
+      pivot_longer(-epoch, names_to = "loss_type", values_to = "value") |>
+      mutate(split = "validation")
+  } else tibble::tibble()
+
+  bind_rows(train_long, val_long) |>
+    filter(!is.na(value)) |>
+    ggplot(aes(epoch, value, color = split)) +
+    geom_line() +
+    facet_wrap(~loss_type, scales = "free_y") +
+    labs(title = paste("Training curves -", model_id), y = "loss") +
+    theme_minimal()
+}
+```
+
+```{r val-ap, eval=!is.null(eval_result$validation_data)}
+ap_cols <- c("ap", "ap50", "ap75", "map",
+             "mAP_50_95", "mAP_50", "F1", "ema_mAP_50_95")
+
+eval_result$validation_data |>
+  select(epoch, any_of(ap_cols)) |>
+  pivot_longer(-epoch, names_to = "metric", values_to = "value") |>
+  filter(!is.na(value)) |>
+  ggplot(aes(epoch, value, color = metric)) +
+  geom_line() +
+  labs(title = "Validation AP / mAP", y = "value") +
+  theme_minimal()
+```
+
+## Sanity-Check Prediction
+
+```{r predict}
+model <- from_pretrained(
+  model_id,
+  board = "local",
+  device = params$device,
+  confidence = params$confidence
+)
+
+val_images <- dir_ls(path(data_dir, "valid"), glob = "*.jpg")
+if (!length(val_images)) {
+  val_images <- dir_ls(path(data_dir, "valid"), glob = "*.png")
+}
+
+stopifnot(length(val_images) > 0)
+
+test_image <- val_images[[params$test_image_index]]
+
+test_result <- predict_image(
+  image_path = test_image,
+  model = model,
+  use_slicing = identical(task, "detection"),
+  slice_size = if (identical(task, "detection")) params$slice_size else NULL,
+  overlap = params$overlap,
+  output_dir = out_dir
+)
+
+cat(sprintf("Test image:       %s\n", path_file(test_image)))
+cat(sprintf("Objects detected: %d\n", nrow(test_result)))
+if (nrow(test_result) > 0) {
+  cat(sprintf("Mean confidence:  %.3f\n", mean(test_result$confidence)))
+}
+```
+
+```{r gt-overlay, fig.cap="Ground truth"}
+pg_plot_annotations(
+  image_path = test_image,
+  annotation_json = path(data_dir, "valid", "_annotations.coco.json")
+)
+```
+
+```{r pred-overlay, fig.cap="Prediction"}
+pred_image <- test_image |>
+  path_file() |>
+  path_ext_remove() |>
+  paste0("_prediction.png")
+
+knitr::include_graphics(path(out_dir, pred_image))
+```
+
+## Detection Evaluation
+
+This section applies only to detection models.
+
+```{r sahi-eval, eval=identical(task, "detection")}
+sahi_eval <- evaluate_model_sahi(
+  model = model,
+  annotation_json = path(data_dir, "valid/_annotations.coco.json"),
+  image_dir = path(data_dir, "valid"),
+  use_slicing = TRUE,
+  slice_size = params$slice_size,
+  overlap = params$overlap,
+  max_dets = params$max_dets
+)
+
+print(sahi_eval$summary, n = Inf)
+
+readr::write_csv(
+  sahi_eval$predictions,
+  path(out_dir, "sahi_validation_predictions.csv")
+)
+```
+
+## Segmentation Analysis
+
+This section applies only to segmentation models.
+
+```{r morphology, eval=identical(task, "segmentation") && nrow(test_result) > 0}
+test_result |>
+  select(class_name, confidence, area, eccentricity, orientation_deg,
+         solidity, circularity, size_category, shape_category) |>
+  arrange(desc(area)) |>
+  head(20) |>
+  print()
+
+get_population_stats(test_result)
+```
+
+```{r morphology-plots, eval=identical(task, "segmentation") && nrow(test_result) > 0}
+test_result |>
+  ggplot(aes(log_area, fill = class_name)) +
+  geom_histogram(bins = 30, alpha = 0.7, position = "identity") +
+  labs(
+    title = "Object size distribution by class",
+    x = "log10(Area) [pixels^2]",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+test_result |>
+  ggplot(aes(eccentricity, circularity, color = class_name, size = area)) +
+  geom_point(alpha = 0.6) +
+  scale_size_continuous(trans = "log10") +
+  labs(
+    title = "Shape space (eccentricity x circularity)",
+    x = "Eccentricity",
+    y = "Circularity"
+  ) +
+  theme_minimal()
+```
+
+```{r segmentation-batch, eval=identical(task, "segmentation")}
+seg_batch <- analyze_segmentation_dir(
+  input_dir = path(data_dir, "valid"),
+  model = model,
+  output_dir = path(out_dir, "segmentation_batch")
+)
+
+seg_batch$summary
+```
+
+## Next Steps
+
+- Compare against prior local runs with `list_trained_models()`
+- For detection, review SAHI COCO metrics before publishing
+- For segmentation, review morphology summaries across the validation set
+- Maintainers can publish curated models to a shared board with `pin_model()`

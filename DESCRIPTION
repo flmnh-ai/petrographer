@@ -6,11 +6,11 @@ Authors@R: c(
            comment = c(ORCID = "0000-0002-2225-5827")),
         person("Ashley", "Rutkoski", , "arutkoski@ufl.edu", role = c("aut")))
 Description: Automated petrographic analysis of thin section images using
-    deep learning models. Provides tools for training Detectron2 models,
-    running predictions with SAHI (Slicing Aided Hyper Inference),
-    calculating morphological properties, and analyzing results. Supports
-    both local and HPC training workflows with seamless R-Python
-    integration via reticulate.
+    deep learning models. Provides tools for training RF-DETR detection
+    and segmentation models, running predictions with SAHI (Slicing Aided
+    Hyper Inference), calculating morphological properties, and analyzing
+    results. Supports both local and HPC training workflows with seamless
+    R-Python integration via reticulate.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
@@ -30,24 +30,27 @@ Imports:
     reticulate,
     stringr,
     tibble,
-    base64enc,
+    tidyr,
 Suggests:
+    grid,
+    ggplot2,
     hipergator,
     here,
     htmltools,
-    magick,
+    knitr,
     patchwork,
+    png,
     quarto,
     reactable,
     scico,
     testthat (>= 3.0.0),
-    tidyr,
     tools,
     withr
+VignetteBuilder: quarto
 Config/testthat/edition: 3
 Remotes:
     flmnh-ai/hipergator
 URL: https://flmnh-ai.github.io/petrographer/
 BugReports: https://github.com/flmnh-ai/petrographer/issues
-SystemRequirements: Python (>= 3.8), PyTorch, rfdetr, SAHI, inference,
-    scikit-image
+SystemRequirements: Python (>= 3.8), PyTorch, rfdetr, SAHI, supervision,
+    inference, opencv-python, scikit-image

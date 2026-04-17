@@ -2,19 +2,41 @@
 % Please edit documentation in R/metrics.R
 \name{parse_metrics}
 \alias{parse_metrics}
-\title{Parse Detectron2 metrics.json into tibbles}
+\title{Parse RF-DETR training metrics into tibbles}
 \usage{
-parse_metrics(metrics_file)
+parse_metrics(log_file)
 }
 \arguments{
-\item{metrics_file}{Path to \code{metrics.json}.}
+\item{log_file}{Path to \code{metrics.csv} (PTL) or \code{log.txt} (native-loop JSONL).}
 }
 \value{
-A list with elements \code{training}, \code{validation}, and \code{classwise} (tibbles).
+list(training, validation, classwise)
 }
 \description{
-Reads a Detectron2 \code{metrics.json} (JSONL) and returns separate tibbles for
-training rows, aggregate validation metrics (bbox + segm), and per-class AP
-when available.
+Reads RF-DETR training artifacts and returns tibbles for training losses,
+validation metrics, and per-class AP when available.
+}
+\details{
+Dispatches on filename:
+\itemize{
+\item \code{metrics.csv} -> PyTorch Lightning CSVLogger (RF-DETR >= 1.6.0).
+\item \code{log.txt} -> native-loop JSONL (RF-DETR < 1.6.0).
+}
+
+Both paths produce the same output shape so callers can stay agnostic.
+
+Returned tibbles use a common, stable schema (prefix-stripped column names):
+\itemize{
+\item \code{training}  - keyed on \code{epoch}, with numeric columns for loss
+components, \code{lr}, etc.
+\item \code{validation}- keyed on \code{epoch}, with validation metrics. Where possible
+we expose a canonical \code{ap} alias (maps to \code{mAP_50_95} on
+PTL and to COCO \code{AP} on legacy) plus \code{ap50}, \code{map},
+\code{precision}, \code{recall} when available.
+\item \code{classwise} - long format, one row per (\code{epoch}, \code{class_name}) with
+\code{map_50_95}, \code{map_50}, \code{precision}, \code{recall} when
+provided. On PTL runs, we also populate \code{map_50_95_ema}
+and \code{map_50_ema} when EMA AP columns are present.
+}
 }
 \keyword{internal}

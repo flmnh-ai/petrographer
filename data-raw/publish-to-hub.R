@@ -24,8 +24,9 @@ hub_board <- pins::board_folder(
 )
 
 # Example: Pin a trained model to the hub
-# Replace with your actual model directory and ID
-model_dir <- "Detectron2_Models/my_model"
+# Replace with your actual model directory and ID. After train_model(),
+# the output lives at .petrographer/models/<model_id>/<run_id>/output/.
+model_dir <- ".petrographer/models/my_model/<run_id>/output"
 model_id <- "my_model_v1"
 
 pin_model(
@@ -33,10 +34,9 @@ pin_model(
   model_id = model_id,
   board = hub_board,
   metadata = list(
-    description = "Description of what this model does",
-    backbone = "resnet50",
-    num_classes = 5,
-    notes = "Any additional notes"
+    description  = "Description of what this model does",
+    model_variant = "small",
+    notes        = "Any additional notes"
   )
 )
 
