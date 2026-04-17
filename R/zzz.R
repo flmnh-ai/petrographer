@@ -12,12 +12,7 @@ utils::globalVariables(c(
   # Declare Python requirements (Reticulate >= 1.41) without initializing Python
   if (utils::packageVersion("reticulate") >= "1.41") {
     reticulate::py_require(c(
-      "sahi", "rfdetr",
-      # TODO: confirm whether Roboflow's `inference` package is still needed.
-      # No R or inst/python code currently imports it as of 2026-04 — it may be
-      # a leftover from the pre-RF-DETR workflow. Drop if nothing regresses.
-      "inference",
-      "supervision",
+      "sahi", "rfdetr", "supervision",
       "opencv-python", "scikit-image"
     ))
   }

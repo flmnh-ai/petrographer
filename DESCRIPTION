@@ -53,4 +53,4 @@ Remotes:
 URL: https://flmnh-ai.github.io/petrographer/
 BugReports: https://github.com/flmnh-ai/petrographer/issues
 SystemRequirements: Python (>= 3.8), PyTorch, rfdetr, SAHI, supervision,
-    inference, opencv-python, scikit-image
+    opencv-python, scikit-image
