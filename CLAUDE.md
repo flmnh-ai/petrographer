@@ -4,7 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Package Overview
 
-**petrographer** is an R package for automated petrographic thin section analysis using Detectron2 (instance segmentation) and SAHI (slicing aided hyper inference). It provides a clean interface for training models, running inference, and analyzing morphological properties of detected objects.
+**petrographer** is an R package for automated petrographic thin section analysis using RF-DETR (instance segmentation) and SAHI (slicing aided hyper inference). It provides a clean, HuggingFace-like interface for training models, running inference, and analyzing morphological properties of detected objects.
+
+**Backend:**
+- **RF-DETR**: Modern DETR-based transformer detector with simplified training interface. Supports nano, small, medium, and large model variants.
 
 **Target Users:**
 - Primary: Simple HuggingFace-like interface for researchers running inference with pretrained models
@@ -29,7 +32,7 @@ devtools::check()
 
 ### Python Dependencies
 The package requires Python 3.8+ with:
-- detectron2
+- rfdetr
 - sahi
 - torch, torchvision
 - opencv-python
@@ -48,8 +51,15 @@ Python integration via `reticulate` - the R package manages this automatically.
 - Minimal dependencies, focused functionality
 - Breaking changes OK - this is research code
 
-**Recent Refactoring (2025-01):**
-The package was dramatically simplified, removing ~40% of code:
+**Recent Refactorings:**
+
+*2025-10: RF-DETR Migration*
+- Removed Detectron2 backend entirely (~1,300 lines of code removed, 30-35% reduction)
+- Simplified to RF-DETR only - no more backend abstraction
+- Removed complex LR scaling, freeze stages, backbone configuration
+- Much simpler training interface
+
+*2025-01: General Simplification*
 - Removed complex pins catalog/versioning infrastructure
 - Removed compare_models, diagnose_annotations wrappers
 - Streamlined model loading to 2-3 clear paths
@@ -67,7 +77,7 @@ User Workflow:
 
 Developer Workflow:
 1. validate_dataset("data_dir") → check COCO format
-2. train_model(data_dir/dataset_id, model_id, ...) → local or HPC training (auto-pins to .petrographer/)
+2. train_model(dataset_id, model_id, model_variant = "nano", ...) → local or HPC training (auto-pins to .petrographer/, auto-infers num_classes from COCO)
 3. from_pretrained("model_id") → load trained model (smart: checks local first)
 4. [Optional] pin_model(..., hub_board) → publish to public hub (maintainers only)
 ```
@@ -89,14 +99,13 @@ Developer Workflow:
   - `predict_image()` - Single image inference with SAHI + morphology
   - `predict_images()` - Batch processing
   - `evaluate_model_sahi()` - COCO evaluation metrics
-  - `evaluate_training()` - Parse training metrics.json
+  - `evaluate_training()` - Parse training metrics (metrics.csv for PTL >= 1.6.0, log.txt for native loop)
 
 - `training.R` - Training orchestration (LOCAL + HPC)
   - `train_model()` - Unified interface, handles local/HPC dispatch
-  - Smart LR scaling based on batch size + freeze_at
+  - Simple parameter passing to RF-DETR (no complex LR/freeze logic)
   - Auto-versioning for model names
   - Manifest creation with metadata
-  - **DO NOT MODIFY without approval** - this was heavily tuned
 
 - `dataset.R` - Dataset utilities
   - `validate_dataset()` - COCO format validation + diagnostics
@@ -104,17 +113,23 @@ Developer Workflow:
 
 - `morphology.R` - Extract properties from SAHI results via scikit-image
 - `summary.R` - Aggregation functions (by image, population stats)
-- `metrics.R` - Parse Detectron2 metrics.json
+- `metrics.R` - Parse training metrics (metrics.csv / log.txt)
 - `utils.R` - S3 print methods, small helpers
-- `visualization.R` - Plot COCO annotations with magick
+- `visualization.R` - Plot COCO annotations via Roboflow supervision (inst/python/visualize.py)
 
-**inst/python/train.py** - Detectron2 training script
+**inst/python/train.py** - RF-DETR training script
 - Called by training.R via processx
-- Handles dataset registration, augmentations, training loop
-- Uses WarmupCosineLR schedule, differential LR (0.1x backbone, 1.0x head)
-- BestCheckpointer saves model_best.pth based on segm/AP
-- **Saves metadata.json with class names** for inference (thing_classes, num_classes, dataset info)
-- **Stable - don't modify unless training improvements needed**
+- Simple interface: imports rfdetr and calls model.train() with metrics=True
+- Extracts class names from COCO JSON
+- RF-DETR automatically saves checkpoints:
+  - `checkpoint_best_total.pth` - Best checkpoint by total loss (primary, loaded by petrographer)
+  - `checkpoint_best_regular.pth` - Best checkpoint (non-EMA)
+  - `checkpoint_best_ema.pth` - Best checkpoint with EMA weights (if EMA enabled)
+  - `checkpoint.pth` - Latest checkpoint for resuming
+  - `metrics.csv` + `hparams.yaml` - PyTorch Lightning training metrics (RF-DETR >= 1.6.0)
+  - `log.txt` - Native-loop training metrics (RF-DETR < 1.6.0)
+- Creates `metadata.json` with class names and training config
+- Supports all RF-DETR model variants (nano, small, medium, large, xlarge, 2xlarge, preview)
 
 **inst/python/slice_dataset.py** - SAHI dataset slicing utility
 
@@ -123,22 +138,24 @@ Developer Workflow:
 **PetrographyModel Object:**
 ```r
 structure(list(
-  sahi_model = <SAHI AutoDetectionModel>,  # The actual detector (loaded with category_mapping)
-  model_path = "path/to/weights.pth",      # Needed for predict_images
-  config_path = "path/to/config.yaml",     # Needed for predict_images
-  confidence = 0.5,                         # Threshold
+  sahi_model = <SAHI AutoDetectionModel>,  # SAHI wrapper for inference
+  rfdetr_model = <RF-DETR model>,          # Underlying RF-DETR model
+  model_path = "path/to/checkpoint_best_total.pth", # Weights path
+  model_variant = "nano",                   # RF-DETR variant (nano/small/medium/large)
+  confidence = 0.5,                         # Detection threshold
   device = "cpu",                           # cpu/cuda/mps
-  manifest = NULL or list()                 # Optional metadata
+  manifest = list(...)                      # Model metadata
 ), class = "PetrographyModel")
 ```
 
-`from_pretrained()` returns this structure. The `sahi_model` includes `category_mapping` loaded from metadata.json, enabling class name predictions.
-The wrapper is necessary because `predict_images()` needs paths to call SAHI's batch function.
+`from_pretrained()` returns this structure after loading the RF-DETR model.
+The `sahi_model` includes `category_mapping` loaded from metadata.json, enabling class name predictions.
+The wrapper is needed because `predict_images()` requires access to model paths for SAHI's batch function.
 
 **Training Config:**
-`train_model()` has extensive parameter validation and config building.
-R computes batch sizes, learning rates, workers, then calls Python script.
-The display/config logic is verbose but **do not simplify** - it was heavily refined.
+`train_model()` validates parameters and builds config, then calls Python training script.
+Much simpler than before - just passes parameters directly to RF-DETR.
+Auto-calculates `grad_accum_steps` to maintain effective batch size of 16: `batch_size × grad_accum_steps = 16`.
 
 **HPC Integration:**
 Uses `hipergator` package for SLURM job submission with rsync for efficient file transfer.
@@ -147,17 +164,20 @@ Uses `hipergator` package for SLURM job submission with rsync for efficient file
 ```
 /blue/base_dir/
   datasets/{dataset_id}/    # Shared across all models (rsync skips if unchanged)
-  scripts/train.py          # Shared script (rsync skips if unchanged)
+  scripts/train.py          # Shared RF-DETR training script (rsync skips if unchanged)
   models/{model_id}/{run_id}/output/  # Versioned training runs
 ```
 
-**Workflow**: Upload dataset/scripts → submit job → wait → download model_best.pth, config.yaml, metadata.json → pin to local board.
+**Workflow**: Upload dataset/scripts → submit job → wait → download files → pin to local board.
 
 **Key Points:**
 - `run_id` (timestamp) ensures multiple training runs don't conflict
 - rsync only uploads changed files (datasets and train.py reused across runs)
 - SLURM `working_dir = base_dir` for clean relative paths
-- Downloads only essential files (model_best.pth, config.yaml, metadata.json, metrics.json, log.txt)
+- **Downloaded files:**
+  - **Required:** `checkpoint_best_total.pth`, `metadata.json`
+  - **Optional:** `metrics.csv` + `hparams.yaml` (PTL >= 1.6.0), `log.txt` (native loop), `metrics_plot.png`, `results.json`
+  - RF-DETR creates additional checkpoints on HPC (not downloaded): `checkpoint.pth`, `checkpoint_best_regular.pth`, `checkpoint_best_ema.pth`
 
 ### Pins Integration (Core Infrastructure)
 
@@ -202,8 +222,8 @@ train_model(
 **Dataset Version Tracking (Reproducibility):**
 Models automatically track the exact dataset version used for training. This ensures reproducibility and allows you to retrieve the training data later:
 ```r
-# Train a model (dataset version automatically captured)
-train_model(dataset_id = "my_dataset", num_classes = 3, ...)
+# Train a model (dataset version and num_classes automatically captured)
+train_model(dataset_id = "my_dataset", model_variant = "nano", ...)
 
 # Later, retrieve the exact dataset version used for training
 dataset_path <- get_training_dataset("my_dataset")
@@ -260,8 +280,6 @@ model <- from_pretrained("shell_v3", device = "cpu", confidence = 0.5)
 
 # From local training board
 model <- from_pretrained("my_model", board = "local", device = "cuda")
-# OR use convenience wrapper
-model <- load_model("my_model", device = "cuda")
 
 # From custom board
 my_board <- pins::board_folder("~/shared-models", versioned = TRUE)
@@ -286,26 +304,32 @@ results <- predict_images("input_dir/", model, output_dir = "results/")
 ```
 
 ### Training Models
+
 ```r
 # Local training (auto-pins to .petrographer/)
+# num_classes auto-inferred from COCO annotations
+# grad_accum_steps auto-calculated: batch_size × grad_accum_steps = 16
 train_model(
-  data_dir = "data/processed/dataset",
-  output_name = "my_model",
-  num_classes = 5,
-  max_iter = 12000,
-  device = "cuda"
+  dataset_id = "my_dataset",
+  model_id = "my_model",
+  model_variant = "nano",  # or "small", "medium", "large"
+  epochs = 10,
+  batch_size = 2,  # grad_accum_steps will be 8 (effective batch = 16)
+  device = "mps"  # or "cuda", "cpu"
+)
+
+# HPC training with custom gradient accumulation
+train_model(
+  dataset_id = "my_dataset",
+  model_id = "my_model",
+  model_variant = "small",
+  epochs = 20,
+  batch_size = 4,  # grad_accum_steps will be 4 (effective batch = 16)
+  grad_accum_steps = 8  # Override auto-calculation if needed
 )
 
 # Load trained model
-model <- load_model("my_model")
-
-# HPC training (reads PETROGRAPHER_HPC_HOST, PETROGRAPHER_HPC_BASE_DIR from .Renviron)
-train_model(
-  data_dir = "data/processed/dataset",
-  output_name = "my_model",
-  num_classes = 5,
-  hpc_user = "username"
-)
+model <- from_pretrained("my_model", board = "local")
 ```
 
 ### Publishing Models (Maintainers Only)
@@ -315,7 +339,7 @@ hub_board <- pins::board_folder(here::here("pkgdown/assets/pins"), versioned = T
 
 # Pin model to hub
 pin_model(
-  model_dir = "Detectron2_Models/my_model",
+  model_dir = ".petrographer/models/my_model/output",
   model_id = "my_model",
   board = hub_board,
   metadata = list(description = "Shell detector v3")
@@ -352,19 +376,17 @@ Run with `devtools::test()` or `testthat::test_file("tests/testthat/test-*.R")`.
 2. Add a simple parameter to existing function
 3. Create new function (only if truly distinct use case)
 
-### Training.R is Sacred
-
-The training pipeline (`training.R`, `train.py`) was heavily refined through iteration:
-- Smart LR scaling based on batch size and freeze_at
-- Differential learning rates (0.1x backbone, 1.0x head)
-- Auto-versioning with local + remote checks
-- Extensive config validation and display
-
-**Do not refactor without explicit approval.**
-
 ### Removed Features (Do Not Re-add)
 
-The following were removed in the 2025-01 simplification:
+**Removed in 2025-10 (RF-DETR migration):**
+- Detectron2 backend entirely (~1,300 lines)
+- Complex LR scaling based on batch size and freeze_at
+- Backbone configuration (ResNet50/101, ResNeXt)
+- Freeze stages for transfer learning
+- Differential learning rates (0.1x backbone, 1.0x head)
+- All Detectron2-specific training logic
+
+**Removed in 2025-01 (general simplification):**
 - `compare_models()` - model comparison plots
 - `diagnose_annotations()` - wrapper around annotation_diagnostics
 - `summarize_dataset()` - redundant with validate_dataset
@@ -372,7 +394,7 @@ The following were removed in the 2025-01 simplification:
 - `pg_install_*` - installation utilities
 - Complex pins catalog/versioning
 
-**Rationale:** Not core to the 80/20 use case. Can add back if genuine need emerges.
+**Rationale:** Not core to the 80/20 use case. RF-DETR provides simpler, modern alternative. Can add back if genuine need emerges.
 
 ### Environment Variables
 
@@ -388,16 +410,17 @@ Optional configuration via `.Renviron`:
 - **Core:** `reticulate`, `processx` (R-Python bridge)
 - **Tidyverse:** `dplyr`, `purrr`, `tibble`, `readr`, `stringr`
 - **System:** `fs`, `cli`, `glue`, `jsonlite`
-- **Optional:** `pins` (model sharing), `hipergator` (HPC), `magick` (visualization)
+- **Optional:** `pins` (model sharing), `hipergator` (HPC), `png` + `grid` (in-chunk image display)
 
 ### Python Packages
-- **Deep Learning:** `torch`, `detectron2`
+- **Deep Learning:** `torch`, `rfdetr`
 - **Detection:** `sahi` (sliced inference)
+- **Visualization:** `supervision` (annotation + prediction overlays, via `inst/python/visualize.py`)
 - **Processing:** `opencv-python`, `scikit-image`, `pycocotools`
 
 ## Resources
 
 - **Package docs:** https://flmnh-ai.github.io/petrographer/
-- **Detectron2:** https://github.com/facebookresearch/detectron2
+- **RF-DETR:** https://github.com/om-ai-lab/RF-DETR
 - **SAHI:** https://github.com/obss/sahi
 - **Pins:** https://pins.rstudio.com/
