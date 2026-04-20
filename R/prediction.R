@@ -490,13 +490,14 @@ evaluate_model_sahi <- function(model,
 
   results_py <- reticulate::r_to_py(results_list, convert = FALSE)
   coco_dt <- coco_gt$loadRes(results_py)
-  coco_eval <- coco_eval_mod$COCOeval(coco_gt, coco_dt, iou_type)
 
-  # Configure maxDets for dense detection scenarios
+  # For dense detection (user passes max_dets > 100), override params$maxDets so
+  # stats[1-5] (AP50/AP75/AP_small/medium/large) and stats[6-11] (AR@... rows)
+  # all report at max_dets. Keeps the reported metrics internally consistent.
+  coco_eval <- coco_eval_mod$COCOeval(coco_gt, coco_dt, iou_type)
   if (max_dets > 100) {
     coco_eval$params$maxDets <- reticulate::r_to_py(as.integer(c(1, 10, max_dets)))
   }
-
   coco_eval$evaluate()
   coco_eval$accumulate()
   coco_eval$summarize()
@@ -508,6 +509,28 @@ evaluate_model_sahi <- function(model,
     "AR@1", "AR@10", ar_label, "AR_small", "AR_medium", "AR_large"
   )
 
+  # pycocotools' summarize() hardcodes maxDets=100 for the first row (AP
+  # averaged over IoU, area=all). When we override params$maxDets to drop 100
+  # from the list, stats[1] (R) comes back as -1. Recompute it manually at
+  # max_dets by slicing the precision tensor directly — single eval pass, no
+  # need to run evaluate/accumulate twice.
+  precision <- reticulate::py_to_r(coco_eval$eval$precision)
+  recall <- reticulate::py_to_r(coco_eval$eval$recall)
+  # Tensors:
+  #   precision: [T, R, K, A, M] = [iou_thresh, recall_thresh, categories, area_ranges, maxDets]
+  #   recall:    [T, K, A, M]
+  max_dets_list <- as.integer(reticulate::py_to_r(coco_eval$params$maxDets))
+  mind <- which(max_dets_list == max(max_dets_list))[1]  # use the largest maxDets we configured
+  aind <- 1L  # 'all' area range (Python index 0 = R index 1)
+  iou_thrs <- as.numeric(reticulate::py_to_r(coco_eval$params$iouThrs))
+  iou50_idx <- which(abs(iou_thrs - 0.5) < 1e-6)[1]
+
+  if (max_dets != 100 && max_dets > 100) {
+    s <- precision[, , , aind, mind]
+    valid <- s > -1
+    stats[1] <- if (any(valid)) mean(s[valid]) else -1
+  }
+
   summary_tbl <- tibble::tibble(
     metric = names(stats),
     value = as.numeric(stats)
@@ -515,13 +538,254 @@ evaluate_model_sahi <- function(model,
 
   predictions_tbl <- dplyr::bind_rows(detections_rows)
 
+  # Per-class metrics. Slice precision/recall along the K (category) axis to
+  # get AP / AP50 / AR per class at the configured maxDets. Category order in
+  # the tensors matches coco_eval$params$catIds.
+  cat_ids <- as.integer(reticulate::py_to_r(coco_eval$params$catIds))
+  cats_raw <- reticulate::py_to_r(coco_gt$loadCats(coco_eval$params$catIds))
+  class_name_lookup <- vapply(cats_raw, function(c) as.character(c$name), character(1))
+  names(class_name_lookup) <- as.character(vapply(cats_raw, function(c) as.integer(c$id), integer(1)))
+
+  per_class_tbl <- purrr::map_dfr(seq_along(cat_ids), function(k) {
+    # AP averaged over IoU: precision[, , k, aind, mind] — shape [T, R]
+    p_k <- precision[, , k, aind, mind]
+    valid_p <- p_k > -1
+    ap <- if (any(valid_p)) mean(p_k[valid_p]) else NA_real_
+
+    # AP50: precision[iou50_idx, , k, aind, mind] — shape [R]
+    ap50 <- if (!is.na(iou50_idx)) {
+      p_k_50 <- precision[iou50_idx, , k, aind, mind]
+      valid_p50 <- p_k_50 > -1
+      if (any(valid_p50)) mean(p_k_50[valid_p50]) else NA_real_
+    } else NA_real_
+
+    # AR averaged over IoU: recall[, k, aind, mind] — shape [T]
+    r_k <- recall[, k, aind, mind]
+    valid_r <- r_k > -1
+    ar <- if (any(valid_r)) mean(r_k[valid_r]) else NA_real_
+
+    tibble::tibble(
+      class_id = as.integer(cat_ids[k]),
+      class_name = unname(class_name_lookup[as.character(cat_ids[k])]),
+      AP = ap,
+      AP50 = ap50,
+      AR = ar
+    )
+  })
+
   result <- list(
     summary = summary_tbl,
+    per_class = per_class_tbl,
     predictions = predictions_tbl,
     coco_eval = coco_eval
   )
   class(result) <- "sahi_evaluation"
   result
+}
+
+#' Compute a confusion matrix from SAHI predictions + COCO ground truth
+#'
+#' For each image, greedily match predicted boxes to ground-truth boxes by IoU
+#' (highest-scoring prediction matches first). Predictions that match a GT box
+#' with IoU >= `iou_threshold` contribute a (gt_class, pred_class) cell.
+#' Unmatched predictions land in the "background" *row* (false positives);
+#' unmatched GT boxes land in the "background" *column* (false negatives).
+#'
+#' Detection doesn't have a clean confusion-matrix definition (unmatched
+#' predictions and unmatched GT don't map onto classification confusion
+#' cleanly), so treat this as a diagnostic heatmap rather than a calibrated
+#' metric.
+#'
+#' @param predictions Tibble of predictions with `image_id`, `category_id`,
+#'   `score`, `xmin`, `ymin`, `width`, `height` (the `predictions` element of
+#'   [evaluate_model_sahi()] output works directly).
+#' @param annotation_json Path to the COCO annotation JSON the predictions
+#'   were produced against.
+#' @param iou_threshold Minimum IoU for a prediction to count as matching a
+#'   GT box (default 0.5).
+#' @param score_threshold Filter predictions below this score before matching
+#'   (default 0; keep all).
+#' @return A list with:
+#'   \itemize{
+#'     \item `long`: long-format tibble `(gt_label, pred_label, count)`
+#'     \item `matrix`: wide tibble, one row per GT label
+#'     \item `class_names`: character vector of class labels (includes "background")
+#'     \item `iou_threshold`: the threshold used
+#'   }
+#' @export
+confusion_matrix <- function(predictions,
+                             annotation_json,
+                             iou_threshold = 0.5,
+                             score_threshold = 0) {
+  if (!fs::file_exists(annotation_json)) {
+    cli::cli_abort("Annotation file not found: {.path {annotation_json}}")
+  }
+  required <- c("image_id", "category_id", "score", "xmin", "ymin", "width", "height")
+  missing_cols <- setdiff(required, names(predictions))
+  if (length(missing_cols) > 0) {
+    cli::cli_abort("Predictions tibble missing columns: {.val {missing_cols}}")
+  }
+
+  coco_mod <- reticulate::import("pycocotools.coco", convert = FALSE)
+  coco_gt <- coco_mod$COCO(annotation_json)
+
+  cat_ids_py <- coco_gt$getCatIds()
+  cats <- reticulate::py_to_r(coco_gt$loadCats(cat_ids_py))
+  class_names <- vapply(cats, function(c) as.character(c$name), character(1))
+  class_ids <- vapply(cats, function(c) as.integer(c$id), integer(1))
+  class_name_lookup <- setNames(class_names, as.character(class_ids))
+
+  preds <- predictions |>
+    dplyr::filter(.data$score >= score_threshold) |>
+    dplyr::mutate(xmax = .data$xmin + .data$width, ymax = .data$ymin + .data$height)
+
+  all_image_ids <- sort(unique(c(
+    as.integer(preds$image_id),
+    as.integer(reticulate::py_to_r(coco_gt$getImgIds()))
+  )))
+
+  match_records <- purrr::map_dfr(all_image_ids, function(img_id) {
+    .match_predictions_to_gt(
+      img_id = img_id,
+      preds_img = preds |> dplyr::filter(.data$image_id == img_id),
+      coco_gt = coco_gt,
+      iou_threshold = iou_threshold
+    )
+  })
+
+  labels <- c(class_names, "background")
+
+  matches_labeled <- match_records |>
+    dplyr::mutate(
+      gt_label = ifelse(
+        is.na(.data$gt_class),
+        "background",
+        unname(class_name_lookup[as.character(.data$gt_class)])
+      ),
+      pred_label = ifelse(
+        is.na(.data$pred_class),
+        "background",
+        unname(class_name_lookup[as.character(.data$pred_class)])
+      )
+    )
+
+  long_tbl <- matches_labeled |>
+    dplyr::count(.data$gt_label, .data$pred_label, name = "count") |>
+    dplyr::mutate(
+      gt_label = factor(.data$gt_label, levels = labels),
+      pred_label = factor(.data$pred_label, levels = labels)
+    ) |>
+    tidyr::complete(
+      gt_label = factor(labels, levels = labels),
+      pred_label = factor(labels, levels = labels),
+      fill = list(count = 0L)
+    )
+
+  wide_tbl <- long_tbl |>
+    tidyr::pivot_wider(names_from = "pred_label", values_from = "count")
+
+  structure(
+    list(
+      long = long_tbl,
+      matrix = wide_tbl,
+      class_names = labels,
+      iou_threshold = iou_threshold
+    ),
+    class = "petrographer_confusion_matrix"
+  )
+}
+
+# Internal: greedy IoU-matching between predictions and GT for one image.
+.match_predictions_to_gt <- function(img_id, preds_img, coco_gt, iou_threshold) {
+  ann_ids <- coco_gt$getAnnIds(imgIds = reticulate::r_to_py(as.integer(img_id)))
+  gt_anns <- reticulate::py_to_r(coco_gt$loadAnns(ann_ids))
+
+  gt_n <- length(gt_anns)
+  gt_boxes <- if (gt_n > 0) {
+    xmin <- vapply(gt_anns, function(a) as.numeric(a$bbox[[1]]), numeric(1))
+    ymin <- vapply(gt_anns, function(a) as.numeric(a$bbox[[2]]), numeric(1))
+    w    <- vapply(gt_anns, function(a) as.numeric(a$bbox[[3]]), numeric(1))
+    h    <- vapply(gt_anns, function(a) as.numeric(a$bbox[[4]]), numeric(1))
+    cbind(xmin = xmin, ymin = ymin, xmax = xmin + w, ymax = ymin + h)
+  } else {
+    matrix(numeric(), 0, 4, dimnames = list(NULL, c("xmin", "ymin", "xmax", "ymax")))
+  }
+  gt_classes <- if (gt_n > 0) {
+    vapply(gt_anns, function(a) as.integer(a$category_id), integer(1))
+  } else integer(0)
+
+  # Sort predictions by descending score so highest-scoring matches first
+  preds_img <- preds_img |> dplyr::arrange(dplyr::desc(.data$score))
+  pred_n <- nrow(preds_img)
+  pred_boxes <- if (pred_n > 0) {
+    cbind(
+      xmin = preds_img$xmin,
+      ymin = preds_img$ymin,
+      xmax = preds_img$xmax,
+      ymax = preds_img$ymax
+    )
+  } else {
+    matrix(numeric(), 0, 4, dimnames = list(NULL, c("xmin", "ymin", "xmax", "ymax")))
+  }
+  pred_classes <- as.integer(preds_img$category_id)
+
+  iou_mat <- .iou_matrix(pred_boxes, gt_boxes)
+
+  matched_gt   <- integer(gt_n)   # 0 = unmatched, else the pred index
+  matched_pred <- integer(pred_n) # 0 = unmatched, else the gt index
+
+  for (i in seq_len(pred_n)) {
+    if (gt_n == 0) break
+    candidates <- which(matched_gt == 0)
+    if (!length(candidates)) break
+    best_j <- candidates[which.max(iou_mat[i, candidates])]
+    if (iou_mat[i, best_j] >= iou_threshold) {
+      matched_pred[i] <- best_j
+      matched_gt[best_j]   <- i
+    }
+  }
+
+  matched_rows <- if (pred_n > 0) {
+    tibble::tibble(
+      gt_class = ifelse(matched_pred > 0,
+                        gt_classes[pmax(matched_pred, 1L)],
+                        NA_integer_),
+      pred_class = pred_classes
+    ) |> dplyr::mutate(
+      gt_class = ifelse(matched_pred == 0, NA_integer_, .data$gt_class)
+    )
+  } else tibble::tibble(gt_class = integer(), pred_class = integer())
+
+  unmatched_gt_rows <- if (gt_n > 0 && any(matched_gt == 0)) {
+    tibble::tibble(
+      gt_class = gt_classes[matched_gt == 0],
+      pred_class = NA_integer_
+    )
+  } else tibble::tibble(gt_class = integer(), pred_class = integer())
+
+  dplyr::bind_rows(matched_rows, unmatched_gt_rows)
+}
+
+# Internal: vectorized IoU between two sets of boxes (rows of [xmin, ymin, xmax, ymax]).
+.iou_matrix <- function(a, b) {
+  n <- nrow(a); m <- nrow(b)
+  if (n == 0 || m == 0) return(matrix(0, n, m))
+
+  axmin <- matrix(a[, 1], n, m); aymin <- matrix(a[, 2], n, m)
+  axmax <- matrix(a[, 3], n, m); aymax <- matrix(a[, 4], n, m)
+  bxmin <- matrix(b[, 1], n, m, byrow = TRUE); bymin <- matrix(b[, 2], n, m, byrow = TRUE)
+  bxmax <- matrix(b[, 3], n, m, byrow = TRUE); bymax <- matrix(b[, 4], n, m, byrow = TRUE)
+
+  ix1 <- pmax(axmin, bxmin); iy1 <- pmax(aymin, bymin)
+  ix2 <- pmin(axmax, bxmax); iy2 <- pmin(aymax, bymax)
+  iw <- pmax(0, ix2 - ix1);  ih <- pmax(0, iy2 - iy1)
+  inter <- iw * ih
+
+  area_a <- (axmax - axmin) * (aymax - aymin)
+  area_b <- (bxmax - bxmin) * (bymax - bymin)
+  union <- area_a + area_b - inter
+
+  ifelse(union > 0, inter / union, 0)
 }
 
 #' Evaluate model training

@@ -8,7 +8,20 @@ import argparse
 import json
 import os
 from pathlib import Path
+
+# Reduce CUDA memory fragmentation. PyTorch's default caching allocator
+# accumulates unusable holes across long training runs with variable tensor
+# sizes (aux losses + multi-scale training + occasional dense-GT tiles), which
+# has been responsible for the `generalized_box_iou` OOMs we keep seeing even
+# when nominal memory headroom should be enough. `expandable_segments` lets
+# freed memory compact and grow on demand, typically recovering 5-30% of
+# "reserved but unallocated" memory. Must be set BEFORE torch is imported —
+# `import rfdetr` below will pull in torch, so this block stays above it.
+# `setdefault` preserves any user override passed in from the environment.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 import rfdetr
+from rfdetr.datasets.aug_config import AUG_AERIAL
 
 # Remove PyTorch DDP variables that SLURM sets automatically.
 # We handle GPU allocation via PTL's accelerator/devices args instead.
@@ -163,6 +176,14 @@ def main():
         'pin_memory': args.pin_memory,
         'persistent_workers': args.persistent_workers,
         'prefetch_factor': args.prefetch_factor,
+        # Augmentation: AUG_AERIAL gives full D4 symmetry (horizontal + vertical
+        # flip + 90° rotation) which matches thin-section / petrography data —
+        # rotationally symmetric, no preferred orientation. Plus mild brightness
+        # / contrast for the mixed photomicrograph + slide-scanner sources.
+        # The naming is for aerial imagery but the math is identical.
+        # rfdetr's default is just HorizontalFlip(p=0.5), which leaves symmetries
+        # on the table for this domain.
+        'aug_config': AUG_AERIAL,
     }
 
     if args.use_amp:

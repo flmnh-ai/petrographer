@@ -9,13 +9,13 @@ params:
   dataset_description: "Segmentation training dataset"
   model_id_prefix: "inclusions_shell"
   variants: ["seg_nano", "seg_small", "seg_medium", "seg_large"]
-  epochs: 80
+  epochs: 120
   batch_size: 8
   time_hours: 8
   validate_every: 2
   early_stopping_patience: null
   confidence: 0.5
-  device: "cpu"
+  device: "mps"
   test_image_index: 1
   hpc_host: "hpg"
   hpc_base_dir: null
@@ -255,6 +255,126 @@ library_runs |>
     y = "metric value"
   ) +
   theme_minimal()
+```
+
+## Training Curves
+
+Read back the per-variant metrics that `evaluate_training()` wrote during the
+loop (one `training_eval/` directory per variant). Check whether each variant
+plateaued or was still improving when training stopped.
+
+```{r load-curves, eval=sum(library_runs$status == "success") > 0}
+successful <- library_runs |> filter(status == "success")
+
+read_variant_curves <- function(variant, model_id) {
+  eval_dir <- path(out_dir, model_id, "training_eval")
+  train_path <- path(eval_dir, "training_metrics.csv")
+  val_path   <- path(eval_dir, "validation_metrics.csv")
+  cw_path    <- path(eval_dir, "validation_classwise.csv")
+
+  train_tbl <- if (file_exists(train_path)) {
+    readr::read_csv(train_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "train")
+  } else {
+    tibble::tibble(variant = variant, split = "train", epoch = integer())
+  }
+  val_tbl <- if (file_exists(val_path)) {
+    readr::read_csv(val_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "val")
+  } else {
+    tibble::tibble(variant = variant, split = "val", epoch = integer())
+  }
+  cw_tbl <- if (file_exists(cw_path)) {
+    readr::read_csv(cw_path, show_col_types = FALSE) |>
+      mutate(variant = variant)
+  } else {
+    tibble::tibble(variant = variant, epoch = integer(), class_name = character())
+  }
+  list(train = train_tbl, val = val_tbl, classwise = cw_tbl)
+}
+
+all_curves <- purrr::map2(successful$variant, successful$model_id, read_variant_curves)
+training_curves   <- bind_rows(purrr::map(all_curves, "train")) |>
+  mutate(variant = factor(variant, levels = variants))
+validation_curves <- bind_rows(purrr::map(all_curves, "val")) |>
+  mutate(variant = factor(variant, levels = variants))
+classwise_curves  <- bind_rows(purrr::map(all_curves, "classwise")) |>
+  mutate(variant = factor(variant, levels = variants))
+```
+
+### Validation mAP over epochs
+
+Primary convergence signal. Flat = trained enough. Still climbing = train longer.
+
+```{r val-map-plot, eval=nrow(validation_curves) > 0 && "mAP_50_95" %in% names(validation_curves)}
+validation_curves |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50"))) |>
+  pivot_longer(-c(variant, epoch), names_to = "metric", values_to = "value") |>
+  filter(!is.na(value)) |>
+  ggplot(aes(epoch, value, color = variant)) +
+  geom_line() +
+  geom_point(size = 0.8, alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(title = "Validation mAP by variant", y = "mAP", x = "epoch") +
+  theme_minimal()
+```
+
+### Train vs val loss
+
+Overfitting check. If val loss turns upward while train loss keeps falling,
+the model is memorizing.
+
+```{r loss-plot, eval=nrow(training_curves) > 0 && "loss" %in% names(training_curves)}
+train_loss <- training_curves |>
+  select(variant, epoch, loss) |>
+  filter(!is.na(loss)) |>
+  mutate(split = "train")
+val_loss <- if ("loss" %in% names(validation_curves)) {
+  validation_curves |>
+    select(variant, epoch, loss) |>
+    filter(!is.na(loss)) |>
+    mutate(split = "val")
+} else {
+  tibble::tibble(variant = character(), epoch = integer(), loss = numeric(), split = character())
+}
+
+bind_rows(train_loss, val_loss) |>
+  ggplot(aes(epoch, loss, color = split)) +
+  geom_line() +
+  facet_wrap(~ variant, scales = "free_y") +
+  labs(title = "Train vs validation loss", y = "loss", x = "epoch") +
+  theme_minimal()
+```
+
+### Per-class validation mAP
+
+For multi-class datasets: which classes is each variant good/bad at? Classes
+that plateau early while others keep climbing usually mean the plateaued
+class is easy and the climbing one is still learning. Large gaps between
+classes are worth flagging — could be class imbalance or annotation quality.
+
+```{r per-class-curves, eval=nrow(classwise_curves) > 0 && "map_50_95" %in% names(classwise_curves)}
+classwise_curves |>
+  filter(!is.na(map_50_95)) |>
+  ggplot(aes(epoch, map_50_95, color = class_name)) +
+  geom_line(alpha = 0.8) +
+  geom_point(size = 0.7, alpha = 0.6) +
+  facet_wrap(~ variant) +
+  labs(
+    title = "Per-class validation mAP@[.5:.95] by variant",
+    y = "mAP", x = "epoch", color = "class"
+  ) +
+  theme_minimal()
+```
+
+### Final-epoch snapshot
+
+```{r final-epochs, eval=nrow(validation_curves) > 0}
+validation_curves |>
+  group_by(variant) |>
+  slice_tail(n = 5) |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50", "loss"))) |>
+  arrange(variant, epoch)
 ```
 
 ## Failures

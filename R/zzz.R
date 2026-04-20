@@ -13,7 +13,12 @@ utils::globalVariables(c(
   if (utils::packageVersion("reticulate") >= "1.41") {
     reticulate::py_require(c(
       "sahi", "rfdetr", "supervision",
-      "opencv-python", "scikit-image"
+      "opencv-python", "scikit-image",
+      # pycocotools: used directly by evaluate_model_sahi() and by the COCO
+      # segmentation mask decoder in inst/python/visualize.py. It used to come
+      # in transitively via the now-removed `inference` package, so declare it
+      # explicitly rather than depend on a sibling's dependency graph.
+      "pycocotools"
     ))
   }
 

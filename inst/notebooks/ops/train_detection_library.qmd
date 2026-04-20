@@ -4,19 +4,19 @@ format:
   html:
     toc: true
 params:
-  dataset_id: "inclusions"
-  data_dir: "data/processed/inclusions_sliced"
-  dataset_description: "Detection training dataset on sliced inclusions"
-  model_id_prefix: "inclusions"
+  dataset_id: "inclusions_shell"
+  data_dir: "data/processed/inclusions_shell"
+  dataset_description: "Detection training dataset on mixed shell and inclusion"
+  model_id_prefix: "inclusions_shell"
   variants: ["nano", "small", "medium", "large"]
-  epochs: 100
-  batch_size: "auto"
-  time_hours: 4
+  epochs: 120
+  batch_size: 8
+  time_hours: 3
   validate_every: 2
-  early_stopping_patience: 10
+  early_stopping_patience: null
   confidence: 0.5
-  device: "cpu"
-  slice_size: 640
+  device: "mps"
+  slice_size: 1024
   overlap: 0.2
   max_dets: 300
   test_image_index: 1
@@ -201,6 +201,27 @@ for (i in seq_along(variants)) {
       save_predictions = path(out_dir, trained_model_id, "sahi_predictions.json")
     )
 
+    # Per-class SAHI metrics: write per variant so the post-loop chunk can read
+    # them back without holding all sahi_eval objects in memory.
+    if (!is.null(sahi_eval$per_class) && nrow(sahi_eval$per_class) > 0) {
+      readr::write_csv(
+        sahi_eval$per_class,
+        path(out_dir, trained_model_id, "per_class_metrics.csv")
+      )
+    }
+
+    # Confusion matrix at IoU >= 0.5. Greedy matching; see ?confusion_matrix.
+    cm <- confusion_matrix(
+      predictions = sahi_eval$predictions,
+      annotation_json = path(data_dir, "valid/_annotations.coco.json"),
+      iou_threshold = 0.5,
+      score_threshold = params$confidence
+    )
+    readr::write_csv(
+      cm$long,
+      path(out_dir, trained_model_id, "confusion_matrix.csv")
+    )
+
     published <- FALSE
     if (isTRUE(params$publish_to_hub)) {
       local_board <- pins::board_folder(here(".petrographer/models"), versioned = TRUE)
@@ -261,6 +282,7 @@ library_runs |>
 ```{r compare-plot, eval=sum(library_runs$status == "success") > 0}
 library_runs |>
   filter(status == "success") |>
+  mutate(variant = factor(variant, levels = variants)) |>
   pivot_longer(c(ap, ap50, ar), names_to = "metric", values_to = "value") |>
   ggplot(aes(variant, value, fill = metric)) +
   geom_col(position = "dodge") +
@@ -269,6 +291,224 @@ library_runs |>
     y = "metric value"
   ) +
   theme_minimal()
+```
+
+## Training Curves
+
+Read back the per-variant metrics that `evaluate_training()` wrote during the
+loop (one `training_eval/` directory per variant). The faceted plots below let
+you check whether each variant plateaued or was still improving when training
+stopped — if validation mAP is still rising at the last epoch, you should
+train longer; if val loss is rising while train loss falls, you're overfitting.
+
+```{r load-curves, eval=sum(library_runs$status == "success") > 0}
+successful <- library_runs |> filter(status == "success")
+
+read_variant_curves <- function(variant, model_id) {
+  eval_dir <- path(out_dir, model_id, "training_eval")
+  train_path <- path(eval_dir, "training_metrics.csv")
+  val_path   <- path(eval_dir, "validation_metrics.csv")
+
+  train_tbl <- if (file_exists(train_path)) {
+    readr::read_csv(train_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "train")
+  } else {
+    tibble::tibble(variant = variant, split = "train", epoch = integer())
+  }
+  val_tbl <- if (file_exists(val_path)) {
+    readr::read_csv(val_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "val")
+  } else {
+    tibble::tibble(variant = variant, split = "val", epoch = integer())
+  }
+  list(train = train_tbl, val = val_tbl)
+}
+
+all_curves <- purrr::map2(successful$variant, successful$model_id, read_variant_curves)
+training_curves   <- bind_rows(purrr::map(all_curves, "train")) |>
+  mutate(variant = factor(variant, levels = variants))
+validation_curves <- bind_rows(purrr::map(all_curves, "val")) |>
+  mutate(variant = factor(variant, levels = variants))
+```
+
+### Validation mAP over epochs
+
+Primary convergence signal. Flat line at the end = trained enough. Still
+climbing = train longer.
+
+```{r val-map-plot, eval=nrow(validation_curves) > 0 && "mAP_50_95" %in% names(validation_curves)}
+validation_curves |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50"))) |>
+  pivot_longer(-c(variant, epoch), names_to = "metric", values_to = "value") |>
+  filter(!is.na(value)) |>
+  ggplot(aes(epoch, value, color = variant)) +
+  geom_line() +
+  geom_point(size = 0.8, alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(
+    title = "Validation mAP by variant",
+    y = "mAP",
+    x = "epoch"
+  ) +
+  theme_minimal()
+```
+
+### Train vs val loss
+
+Overfitting check. Train loss should fall; val loss should fall then plateau.
+If val loss turns upward while train loss keeps falling, the model is
+memorizing — earlier stopping (or more regularization) would help.
+
+```{r loss-plot, eval=nrow(training_curves) > 0 && "loss" %in% names(training_curves)}
+train_loss <- training_curves |>
+  select(variant, epoch, loss) |>
+  filter(!is.na(loss)) |>
+  mutate(split = "train")
+val_loss <- if ("loss" %in% names(validation_curves)) {
+  validation_curves |>
+    select(variant, epoch, loss) |>
+    filter(!is.na(loss)) |>
+    mutate(split = "val")
+} else {
+  tibble::tibble(variant = character(), epoch = integer(), loss = numeric(), split = character())
+}
+
+bind_rows(train_loss, val_loss) |>
+  ggplot(aes(epoch, loss, color = split)) +
+  geom_line() +
+  facet_wrap(~ variant, scales = 'free_y') +
+  labs(
+    title = "Train vs validation loss",
+    y = "loss",
+    x = "epoch"
+  ) +
+  theme_minimal()
+```
+
+### Final-epoch snapshot
+
+Quick numeric answer to "did I train long enough?" — if the last few epochs
+show the metrics still climbing by >0.5% per epoch, keep going.
+
+```{r final-epochs, eval=nrow(validation_curves) > 0}
+validation_curves |>
+  group_by(variant) |>
+  slice_tail(n = 5) |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50", "loss"))) |>
+  arrange(variant, epoch)
+```
+
+## Per-Class Analysis
+
+Multi-class datasets: which classes is each variant good/bad at? Three views:
+
+1. **Per-class training curves** — how each class's mAP evolved over epochs (from
+   rfdetr's `--log-per-class-metrics` written to `validation_classwise.csv`).
+2. **Per-class SAHI eval** — final AP / AP50 / AR per class on the validation
+   set (written by `evaluate_model_sahi()` in the main loop).
+3. **Confusion matrix** — where class mistakes happen (written by
+   `confusion_matrix()` in the main loop). Matched by IoU >= 0.5; unmatched
+   predictions go to the `background` row, unmatched GT to the `background`
+   column.
+
+### Per-class training curves
+
+Per-class mAP trajectories. Classes that plateau early while others keep
+climbing usually mean the plateaued class is easy and the climbing one is
+still learning. Classes that diverge (one climbs, another drops) signal
+class imbalance pulling the optimizer.
+
+```{r per-class-curves, eval=sum(library_runs$status == "success") > 0}
+per_class_curves <- purrr::map_dfr(successful$model_id, function(mid) {
+  cw_path <- path(out_dir, mid, "training_eval", "validation_classwise.csv")
+  if (!file_exists(cw_path)) return(NULL)
+  readr::read_csv(cw_path, show_col_types = FALSE) |>
+    mutate(model_id = mid,
+           variant = successful$variant[successful$model_id == mid])
+})
+
+if (nrow(per_class_curves) > 0 && "map_50_95" %in% names(per_class_curves)) {
+  per_class_curves |>
+    mutate(variant = factor(variant, levels = variants)) |>
+    ggplot(aes(epoch, map_50_95, color = class_name)) +
+    geom_line(alpha = 0.8) +
+    geom_point(size = 0.7, alpha = 0.6) +
+    facet_wrap(~ variant) +
+    labs(
+      title = "Per-class validation mAP@[.5:.95] by variant",
+      y = "mAP", x = "epoch", color = "class"
+    ) +
+    theme_minimal()
+}
+```
+
+### Per-class SAHI eval
+
+Final per-class metrics on the validation set, evaluated with SAHI slicing
+at `slice_size = {r params$slice_size}`. Compare across variants at a glance.
+
+```{r per-class-sahi, eval=sum(library_runs$status == "success") > 0}
+per_class_sahi <- purrr::map_dfr(successful$model_id, function(mid) {
+  pc_path <- path(out_dir, mid, "per_class_metrics.csv")
+  if (!file_exists(pc_path)) return(NULL)
+  readr::read_csv(pc_path, show_col_types = FALSE) |>
+    mutate(model_id = mid,
+           variant = successful$variant[successful$model_id == mid])
+})
+per_class_sahi
+```
+
+```{r per-class-sahi-plot, eval=exists("per_class_sahi") && nrow(per_class_sahi) > 0}
+per_class_sahi |>
+  mutate(variant = factor(variant, levels = variants)) |>
+  pivot_longer(c(AP, AP50, AR), names_to = "metric", values_to = "value") |>
+  ggplot(aes(class_name, value, fill = variant)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(
+    title = "Per-class SAHI eval metrics by variant",
+    x = "class", y = "value"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+### Confusion matrices
+
+Rows = ground-truth class, columns = predicted class. The `background` row
+counts false positives (predictions with no GT match); the `background`
+column counts false negatives (GT boxes nothing matched). Diagonal = correct
+class, off-diagonal = class confusion at IoU >= 0.5.
+
+```{r confusion-matrices, eval=sum(library_runs$status == "success") > 0, fig.height=6}
+confusion_long <- purrr::map_dfr(successful$model_id, function(mid) {
+  cm_path <- path(out_dir, mid, "confusion_matrix.csv")
+  if (!file_exists(cm_path)) return(NULL)
+  readr::read_csv(cm_path, show_col_types = FALSE) |>
+    mutate(model_id = mid,
+           variant = successful$variant[successful$model_id == mid])
+})
+
+if (nrow(confusion_long) > 0) {
+  confusion_long |>
+    mutate(
+      variant = factor(variant, levels = variants),
+      gt_label = factor(gt_label, levels = unique(confusion_long$gt_label)),
+      pred_label = factor(pred_label, levels = levels(gt_label))
+    ) |>
+    ggplot(aes(pred_label, gt_label, fill = count)) +
+    geom_tile() +
+    geom_text(aes(label = count), size = 3) +
+    facet_wrap(~ variant) +
+    scale_fill_gradient(low = "white", high = "steelblue", trans = "log1p") +
+    labs(
+      title = "Confusion matrices (IoU >= 0.5)",
+      x = "predicted class",
+      y = "true class"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+}
 ```
 
 ## Failures
