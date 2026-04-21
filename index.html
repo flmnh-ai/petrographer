@@ -11,8 +11,8 @@
 <script src="deps/bootstrap-5.3.1/bootstrap.bundle.min.js"></script><link href="deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
 <script src="deps/headroom-0.11.0/headroom.min.js"></script><script src="deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="deps/search-1.0.0/fuse.min.js"></script><script src="deps/search-1.0.0/mark.min.js"></script><!-- pkgdown --><script src="pkgdown.js"></script><meta property="og:title" content="Petrographic Thin Section Analysis with Deep Learning">
-<meta name="description" content="Automated petrographic analysis of thin section images using deep learning models. Provides tools for training Detectron2 models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.">
-<meta property="og:description" content="Automated petrographic analysis of thin section images using deep learning models. Provides tools for training Detectron2 models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.">
+<meta name="description" content="Automated petrographic analysis of thin section images using deep learning models. Provides tools for training RF-DETR detection and segmentation models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.">
+<meta property="og:description" content="Automated petrographic analysis of thin section images using deep learning models. Provides tools for training RF-DETR detection and segmentation models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.">
 <meta property="og:image" content="https://flmnh-ai.github.io/petrographer/logo.png">
 </head>
 <body>
@@ -36,8 +36,9 @@
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="articles/model-library.html">Model &amp; Dataset Library</a></li>
-    <li><a class="dropdown-item" href="articles/training-models.html">Training Custom Detection Models</a></li>
+<li><a class="dropdown-item" href="articles/analyzing-predictions.html">Analyzing Predictions</a></li>
+    <li><a class="dropdown-item" href="articles/model-library.html">Model &amp; Dataset Library</a></li>
+    <li><a class="dropdown-item" href="articles/training-models.html">Training Custom Models</a></li>
     <li><a class="dropdown-item" href="articles/whole-slide-basics.html">Whole-Slide Prediction Basics</a></li>
   </ul>
 </li>
@@ -63,7 +64,7 @@
 <!-- badges: start -->
 
 <blockquote>
-<p>HuggingFace-like interface for petrographic thin section analysis with Detectron2 and SAHI</p>
+<p>HuggingFace-like interface for petrographic thin section analysis with RF-DETR and SAHI</p>
 </blockquote>
 <p>Automated instance segmentation and morphological analysis of petrographic thin sections using state-of-the-art computer vision models. Provides a clean, modern workflow for both researchers running inference with pretrained models and developers training custom models.</p>
 <div class="section level2">
@@ -77,7 +78,7 @@
 <span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"inclusions"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Run prediction on an image</span></span>
-<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict.html">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"my_image.jpg"</span><span class="op">)</span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/stats/predict.html" class="external-link">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"my_image.jpg"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Analyze results</span></span>
 <span><span class="fu"><a href="reference/summarize_by_image.html">summarize_by_image</a></span><span class="op">(</span><span class="va">results</span><span class="op">)</span></span>
@@ -90,19 +91,23 @@
 <div class="sourceCode" id="cb2"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://flmnh-ai.github.io/petrographer/">petrographer</a></span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Validate dataset structure</span></span>
+<span><span class="co"># Validate dataset structure + pin it</span></span>
 <span><span class="fu"><a href="reference/validate_dataset.html">validate_dataset</a></span><span class="op">(</span><span class="st">"data/processed/my_dataset"</span><span class="op">)</span></span>
+<span><span class="fu"><a href="reference/pin_dataset.html">pin_dataset</a></span><span class="op">(</span><span class="st">"data/processed/my_dataset"</span>, dataset_id <span class="op">=</span> <span class="st">"my_dataset"</span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Train model (automatically saves to .petrographer/)</span></span>
+<span><span class="co"># Train model (automatically pins to .petrographer/)</span></span>
 <span><span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
-<span>  output_name <span class="op">=</span> <span class="st">"my_model"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span></span>
+<span>  dataset_id    <span class="op">=</span> <span class="st">"my_dataset"</span>,</span>
+<span>  model_id      <span class="op">=</span> <span class="st">"my_model"</span>,</span>
+<span>  model_variant <span class="op">=</span> <span class="st">"small"</span>,   <span class="co"># nano | small | medium | large</span></span>
+<span>  epochs        <span class="op">=</span> <span class="fl">50</span>,</span>
+<span>  batch_size    <span class="op">=</span> <span class="fl">4</span>,</span>
+<span>  device        <span class="op">=</span> <span class="st">"cuda"</span>     <span class="co"># or "cpu", "mps"</span></span>
 <span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Load your trained model</span></span>
-<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu">load_model</span><span class="op">(</span><span class="st">"my_model"</span><span class="op">)</span></span>
-<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict.html">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"test_image.jpg"</span><span class="op">)</span></span></code></pre></div>
+<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"my_model"</span>, board <span class="op">=</span> <span class="st">"local"</span><span class="op">)</span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/stats/predict.html" class="external-link">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"test_image.jpg"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level2">
 <h2 id="table-of-contents">Table of Contents<a class="anchor" aria-label="anchor" href="#table-of-contents"></a>
@@ -133,7 +138,7 @@
 <ul>
 <li><strong>R 4.1+</strong></li>
 <li>
-<strong>Python 3.8+</strong> with detectron2, sahi, torch, torchvision, opencv-python, scikit-image</li>
+<strong>Python 3.8+</strong> with rfdetr, sahi, torch, torchvision, opencv-python, scikit-image</li>
 <li>
 <strong>GPU recommended</strong> for training (CPU works fine for inference)</li>
 </ul>
@@ -166,10 +171,7 @@
 <code class="sourceCode R"><span><span class="co"># List your locally trained models</span></span>
 <span><span class="fu"><a href="reference/list_trained_models.html">list_trained_models</a></span><span class="op">(</span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Load a local model (convenience wrapper)</span></span>
-<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu">load_model</span><span class="op">(</span><span class="st">"my_model"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Or explicitly specify local board</span></span>
+<span><span class="co"># Load a local model</span></span>
 <span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"my_model"</span>, board <span class="op">=</span> <span class="st">"local"</span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
@@ -188,33 +190,37 @@
 <h3 id="local-training">Local Training<a class="anchor" aria-label="anchor" href="#local-training"></a>
 </h3>
 <div class="sourceCode" id="cb7"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/shell_dataset"</span>,</span>
-<span>  output_name <span class="op">=</span> <span class="st">"shell_detector_v4"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  max_iter <span class="op">=</span> <span class="fl">2000</span>,      <span class="co"># default for fine-tuning</span></span>
-<span>  freeze_at <span class="op">=</span> <span class="fl">2</span>,        <span class="co"># freeze stem + res2 (default)</span></span>
-<span>  backbone <span class="op">=</span> <span class="st">"resnet50"</span>, <span class="co"># resnet50, resnet101, resnext101</span></span>
-<span>  device <span class="op">=</span> <span class="st">"cuda"</span>        <span class="co"># or "cpu", "mps"</span></span>
+<code class="sourceCode R"><span><span class="fu"><a href="reference/pin_dataset.html">pin_dataset</a></span><span class="op">(</span><span class="st">"data/processed/shell_dataset"</span>, dataset_id <span class="op">=</span> <span class="st">"shell_dataset"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
+<span>  dataset_id    <span class="op">=</span> <span class="st">"shell_dataset"</span>,</span>
+<span>  model_id      <span class="op">=</span> <span class="st">"shell_detector_v4"</span>,</span>
+<span>  model_variant <span class="op">=</span> <span class="st">"small"</span>,   <span class="co"># nano | small | medium | large | xlarge | 2xlarge | preview</span></span>
+<span>  epochs        <span class="op">=</span> <span class="fl">50</span>,</span>
+<span>  batch_size    <span class="op">=</span> <span class="fl">4</span>,         <span class="co"># grad_accum auto-calculated for effective batch 16</span></span>
+<span>  device        <span class="op">=</span> <span class="st">"cuda"</span>     <span class="co"># or "cpu", "mps"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
 <div class="section level3">
 <h3 id="training-configuration">Training Configuration<a class="anchor" aria-label="anchor" href="#training-configuration"></a>
 </h3>
-<p>Default parameters optimized for fine-tuning:</p>
+<p>Key parameters:</p>
 <ul>
 <li>
-<code>max_iter = 2000</code> - Training iterations</li>
+<code>model_variant</code> - RF-DETR size; pick one of <code>nano | small | medium | large | xlarge | 2xlarge | preview</code>
+</li>
 <li>
-<code>ims_per_batch = NA</code> - Auto-resolves to 2 images per GPU</li>
+<code>epochs</code> - Training length (e.g. 40-100 for fine-tuning)</li>
 <li>
-<code>freeze_at = 2</code> - Freeze backbone stem + res2 layers</li>
+<code>batch_size</code> - Per-GPU batch size; <code>grad_accum_steps</code> auto-calculated so <code>batch_size × grad_accum_steps = 16</code>
+</li>
 <li>
-<code>learning_rate = 0.00025</code> - Base LR (auto-scaled by batch size and freeze_at)</li>
+<code>learning_rate</code> - Optional override (RF-DETR defaults are sensible)</li>
 <li>
-<code>backbone = "resnet50"</code> - Options: resnet50, resnet101, resnext101, or any Detectron2 model zoo key</li>
+<code>device</code> - <code>cuda</code>, <code>mps</code>, or <code>cpu</code>
+</li>
 </ul>
-<p>The package automatically: - Validates dataset structure - Computes optimal batch sizes and learning rates - Handles version conflicts - Saves model to <code>.petrographer/models/</code> with full metadata - Creates training manifests with validation metrics</p>
+<p>The package automatically: - Validates dataset structure - Infers <code>num_classes</code> from COCO annotations - Auto-pins trained model to <code>.petrographer/models/</code> with full metadata - Captures the exact dataset version used for reproducibility</p>
 </div>
 <div class="section level3">
 <h3 id="dataset-preparation">Dataset Preparation<a class="anchor" aria-label="anchor" href="#dataset-preparation"></a>
@@ -248,7 +254,7 @@
 </h3>
 <div class="sourceCode" id="cb11"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="co"># Simple prediction (saves visualization by default)</span></span>
-<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict.html">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"image.jpg"</span><span class="op">)</span></span>
+<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/stats/predict.html" class="external-link">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="st">"image.jpg"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># With custom SAHI parameters</span></span>
 <span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/predict_image.html">predict_image</a></span><span class="op">(</span></span>
@@ -274,8 +280,8 @@
 <h3 id="model-evaluation">Model Evaluation<a class="anchor" aria-label="anchor" href="#model-evaluation"></a>
 </h3>
 <div class="sourceCode" id="cb13"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Evaluate training metrics</span></span>
-<span><span class="fu"><a href="reference/evaluate_training.html">evaluate_training</a></span><span class="op">(</span><span class="st">"Detectron2_Models/my_model"</span><span class="op">)</span></span>
+<code class="sourceCode R"><span><span class="co"># Evaluate training metrics (reads metrics.csv / log.txt from the pin)</span></span>
+<span><span class="fu"><a href="reference/evaluate_training.html">evaluate_training</a></span><span class="op">(</span><span class="st">"my_model"</span><span class="op">)</span></span>
 <span></span>
 <span><span class="co"># Evaluate on COCO dataset</span></span>
 <span><span class="va">metrics</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/evaluate_model_sahi.html">evaluate_model_sahi</a></span><span class="op">(</span></span>
@@ -313,8 +319,6 @@
 <li>
 <code><a href="reference/from_pretrained.html">from_pretrained()</a></code> - Load model from hub, local board, or custom board</li>
 <li>
-<code>load_model()</code> - Convenience wrapper for locally trained models</li>
-<li>
 <code><a href="reference/list_models.html">list_models()</a></code> / <code><a href="reference/list_trained_models.html">list_trained_models()</a></code> - List available models</li>
 <li>
 <code><a href="reference/model_info.html">model_info()</a></code> - Show model metadata and validation metrics</li>
@@ -341,9 +345,7 @@
 <li>
 <code><a href="reference/train_model.html">train_model()</a></code> - Unified training interface (local or HPC)</li>
 <li>
-<code><a href="reference/evaluate_training.html">evaluate_training()</a></code> - Parse and visualize training metrics</li>
-<li>
-<code><a href="reference/prepare_training_config.html">prepare_training_config()</a></code> - Validate training parameters</li>
+<code><a href="reference/evaluate_training.html">evaluate_training()</a></code> - Parse training metrics (metrics.csv / log.txt)</li>
 </ul>
 </div>
 <div class="section level3">
@@ -351,7 +353,7 @@
 </h3>
 <ul>
 <li>
-<code><a href="reference/predict.html">predict()</a></code> - S3 method for PetrographyModel objects</li>
+<code><a href="https://rdrr.io/r/stats/predict.html" class="external-link">predict()</a></code> - S3 method for PetrographyModel objects</li>
 <li>
 <code><a href="reference/predict_image.html">predict_image()</a></code> - Single image inference with SAHI + morphology</li>
 <li>
@@ -390,12 +392,17 @@
 <h3 id="hpc-training">HPC Training<a class="anchor" aria-label="anchor" href="#hpc-training"></a>
 </h3>
 <div class="sourceCode" id="cb17"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Triggers HPC mode automatically when hpc_user is provided</span></span>
-<span><span class="va">model_dir</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
-<span>  output_name <span class="op">=</span> <span class="st">"my_model"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  hpc_user <span class="op">=</span> <span class="st">"youruser"</span></span>
+<code class="sourceCode R"><span><span class="co"># Configure HPC (only needed once per session)</span></span>
+<span><span class="fu">hipergator</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/hipergator/man/hpg_configure.html" class="external-link">hpg_configure</a></span><span class="op">(</span>host <span class="op">=</span> <span class="st">"hpg"</span>, base_dir <span class="op">=</span> <span class="st">"/blue/yourlab/youruser"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="co"># Train on HPC by passing time_hours (triggers SLURM submission)</span></span>
+<span><span class="va">model_id</span> <span class="op">&lt;-</span> <span class="fu"><a href="reference/train_model.html">train_model</a></span><span class="op">(</span></span>
+<span>  dataset_id    <span class="op">=</span> <span class="st">"my_dataset"</span>,</span>
+<span>  model_id      <span class="op">=</span> <span class="st">"my_model"</span>,</span>
+<span>  model_variant <span class="op">=</span> <span class="st">"small"</span>,</span>
+<span>  epochs        <span class="op">=</span> <span class="fl">50</span>,</span>
+<span>  batch_size    <span class="op">=</span> <span class="fl">4</span>,</span>
+<span>  time_hours    <span class="op">=</span> <span class="fl">8</span>          <span class="co"># HPC dispatch when set</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 <p>The package automatically: - Uploads dataset and training script via rsync - Submits SLURM job with optimal GPU resources - Monitors job status with progress updates - Downloads trained model when complete - Cleans up remote files (data preserved by default)</p>
 </div>
@@ -492,11 +499,12 @@
 </h3>
 <ul>
 <li>
-<strong>CUDA out of memory</strong>: Reduce <code>ims_per_batch</code> (try 1-2) or use smaller images</li>
+<strong>CUDA out of memory</strong>: Reduce <code>batch_size</code> (1-2) — <code>grad_accum_steps</code> auto-compensates</li>
 <li>
-<strong>Slow training</strong>: Check GPU utilization, consider different backbone</li>
+<strong>Slow training</strong>: Check GPU utilization, or switch to a smaller <code>model_variant</code>
+</li>
 <li>
-<strong>Poor convergence</strong>: Increase <code>max_iter</code> or adjust <code>learning_rate</code>
+<strong>Poor convergence</strong>: Increase <code>epochs</code> or adjust <code>learning_rate</code>
 </li>
 </ul>
 </div>
@@ -554,7 +562,7 @@
 │   └── summary.R                 # Analysis and aggregation
 ├── inst/
 │   ├── python/
-│   │   ├── train.py              # Detectron2 training script
+│   │   ├── train.py              # RF-DETR training script
 │   │   └── slice_dataset.py      # SAHI dataset slicing utility
 │   └── notebooks/                # Example workflows
 ├── vignettes/                    # Package documentation
@@ -573,19 +581,19 @@
 <h3 id="for-dense-small-objects-200-per-image">For Dense Small Objects (200+ per image)<a class="anchor" aria-label="anchor" href="#for-dense-small-objects-200-per-image"></a>
 </h3>
 <ul>
-<li>Keep <code>ROI_HEADS.BATCH_SIZE_PER_IMAGE = 512</code> (default)</li>
 <li>Use SAHI slicing with <code>slice_size = 512</code> and <code>overlap = 0.2</code>
 </li>
-<li>Consider <code>TEST.DETECTIONS_PER_IMAGE = 1000</code> for very dense images</li>
+<li>Lower <code>confidence</code> to capture faint objects, filter downstream</li>
 </ul>
 </div>
 <div class="section level3">
 <h3 id="training-speed">Training Speed<a class="anchor" aria-label="anchor" href="#training-speed"></a>
 </h3>
 <ul>
-<li>Use <code>ims_per_batch = 2</code> per GPU for good speed/accuracy balance</li>
-<li>ResNet-50 backbone is fastest, ResNeXt-101 for maximum accuracy</li>
-<li>Multi-GPU training automatically scales batch size and learning rate</li>
+<li>Pick the smallest <code>model_variant</code> that meets accuracy needs (<code>nano</code> → <code>small</code> → <code>medium</code> → <code>large</code>)</li>
+<li>
+<code>batch_size</code> sets per-step memory; <code>grad_accum_steps</code> keeps the effective batch at 16 for stable convergence</li>
+<li>On HPC, train with <code>device = "cuda"</code> and a suitable <code>time_hours</code> budget</li>
 </ul>
 </div>
 </div>
@@ -611,7 +619,7 @@
 </h2>
 <ul>
 <li>
-<a href="https://github.com/facebookresearch/detectron2" class="external-link">Detectron2</a> - Facebook AI Research’s detection framework</li>
+<a href="https://github.com/om-ai-lab/RF-DETR" class="external-link">RF-DETR</a> - DETR-based transformer detector with a simplified training interface</li>
 <li>
 <a href="https://github.com/obss/sahi" class="external-link">SAHI</a> - Slicing aided hyper inference for small object detection</li>
 <li>
@@ -674,7 +682,7 @@
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.1.3.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
 </div>
 
     </footer>

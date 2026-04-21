@@ -5,14 +5,14 @@
 <meta charset="utf-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-<title>Training Custom Detection Models • petrographer</title>
+<title>Training Custom Models • petrographer</title>
 <script src="../deps/jquery-3.6.0/jquery-3.6.0.min.js"></script><meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
 <link href="../deps/bootstrap-5.3.1/bootstrap.min.css" rel="stylesheet">
 <script src="../deps/bootstrap-5.3.1/bootstrap.bundle.min.js"></script><link href="../deps/font-awesome-6.5.2/css/all.min.css" rel="stylesheet">
 <link href="../deps/font-awesome-6.5.2/css/v4-shims.min.css" rel="stylesheet">
 <script src="../deps/headroom-0.11.0/headroom.min.js"></script><script src="../deps/headroom-0.11.0/jQuery.headroom.min.js"></script><script src="../deps/bootstrap-toc-1.0.1/bootstrap-toc.min.js"></script><script src="../deps/clipboard.js-2.0.11/clipboard.min.js"></script><script src="../deps/search-1.0.0/autocomplete.jquery.min.js"></script><script src="../deps/search-1.0.0/fuse.min.js"></script><script src="../deps/search-1.0.0/mark.min.js"></script><script src="training-models_files/libs/quarto-html/popper.min.js"></script><script src="training-models_files/libs/quarto-html/tippy.umd.min.js"></script><link href="training-models_files/libs/quarto-html/tippy.css" rel="stylesheet">
 <link href="training-models_files/libs/quarto-html/light-border.css" rel="stylesheet">
-<!-- pkgdown --><script src="../pkgdown.js"></script><meta property="og:title" content="Training Custom Detection Models">
+<!-- pkgdown --><script src="../pkgdown.js"></script><meta property="og:title" content="Training Custom Models">
 <meta property="og:image" content="https://flmnh-ai.github.io/petrographer/logo.png">
 </head>
 <body>
@@ -36,8 +36,9 @@
 <li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
-    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Detection Models</a></li>
+<li><a class="dropdown-item" href="../articles/analyzing-predictions.html">Analyzing Predictions</a></li>
+    <li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
+    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Models</a></li>
     <li><a class="dropdown-item" href="../articles/whole-slide-basics.html">Whole-Slide Prediction Basics</a></li>
   </ul>
 </li>
@@ -56,7 +57,7 @@
 </nav><div class="container template-quarto">
 <div class="row">
   <main id="main" class="col-md-9"><div class="page-header">
-      <img src="../logo.png" class="logo" alt=""><h1>Training Custom Detection Models</h1>
+      <img src="../logo.png" class="logo" alt=""><h1>Training Custom Models</h1>
 
 
 
@@ -70,463 +71,245 @@
 
 
 
-    <p>This vignette walks through training custom object detection models for petrographic analysis. It covers both local training (accessible to all users) and HPC training (specific to University of Florida’s HiPerGator, but adaptable to other SLURM-based systems).</p>
-<section class="level2"><h2 id="prerequisites">Prerequisites<a class="anchor" aria-label="anchor" href="#prerequisites"></a>
+    <p>This vignette explains the current <code>petrographer</code> training workflow at a high level. It covers:</p>
+<ul>
+<li>preparing and validating a dataset</li>
+<li>deciding whether to train detection or segmentation</li>
+<li>choosing between local and HPC execution</li>
+<li>understanding the artifacts produced by training</li>
+</ul>
+<p>For a runnable end-to-end template, see <code>inst/notebooks/templates/train_model.qmd</code>.</p>
+<section class="level2"><h2 id="choose-a-training-task">Choose a Training Task<a class="anchor" aria-label="anchor" href="#choose-a-training-task"></a>
 </h2>
-<p>Before training, ensure you have:</p>
-<ol type="1">
+<p><code>petrographer</code> supports two RF-DETR training paths:</p>
+<ul>
 <li>
-<strong>Dataset in COCO format</strong> with train/valid splits</li>
+<strong>Detection</strong>: bounding boxes with SAHI-based sliced inference at predict time</li>
 <li>
-<strong>Python environment</strong> with detectron2, sahi, torch installed</li>
-<li>
-<strong>GPU access</strong> (recommended) - training on CPU is slow but possible</li>
-</ol></section><section class="level2"><h2 id="dataset-preparation">Dataset Preparation<a class="anchor" aria-label="anchor" href="#dataset-preparation"></a>
+<strong>Segmentation</strong>: instance masks with direct morphology analysis</li>
+</ul>
+<p>Use detection when you mainly need counts, locations, and class labels. Use segmentation when you need mask-derived measurements such as area, eccentricity, circularity, or orientation.</p>
+</section><section class="level2"><h2 id="prepare-the-dataset">Prepare the Dataset<a class="anchor" aria-label="anchor" href="#prepare-the-dataset"></a>
 </h2>
-<section class="level3"><h3 id="validate-your-dataset">Validate Your Dataset<a class="anchor" aria-label="anchor" href="#validate-your-dataset"></a>
-</h3>
-<p>Use <code><a href="../reference/validate_dataset.html">validate_dataset()</a></code> to check your dataset structure and COCO format:</p>
+<p>Training expects a COCO-style dataset with <code>train/</code> and <code>valid/</code> splits.</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://flmnh-ai.github.io/petrographer/">petrographer</a></span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://dplyr.tidyverse.org" class="external-link">dplyr</a></span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://ggplot2.tidyverse.org" class="external-link">ggplot2</a></span><span class="op">)</span></span>
-<span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://fs.r-lib.org" class="external-link">fs</a></span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Validate dataset structure</span></span>
 <span><span class="fu"><a href="../reference/validate_dataset.html">validate_dataset</a></span><span class="op">(</span><span class="st">"data/processed/my_dataset"</span><span class="op">)</span></span></code></pre></div>
 </div>
-<p>Your dataset should have this structure:</p>
+<p>Expected structure:</p>
 <pre><code>my_dataset/
 ├── train/
 │   ├── _annotations.coco.json
-│   └── *.jpg
+│   └── *.jpg / *.png
 └── valid/
     ├── _annotations.coco.json
-    └── *.jpg</code></pre>
-</section><section class="level3"><h3 id="optional-dataset-slicing">Optional: Dataset Slicing<a class="anchor" aria-label="anchor" href="#optional-dataset-slicing"></a>
+    └── *.jpg / *.png</code></pre>
+<section class="level3"><h3 id="optional-slice-large-images">Optional: Slice Large Images<a class="anchor" aria-label="anchor" href="#optional-slice-large-images"></a>
 </h3>
-<p>For large, heterogeneous image sizes, use SAHI slicing to create uniform tiles:</p>
+<p>If the source images are very large or contain many small objects, slicing can make training more stable and improve downstream detection performance.</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Slice large images into 1024x1024 tiles</span></span>
-<span><span class="fu"><a href="../reference/slice_dataset.html">slice_dataset</a></span><span class="op">(</span></span>
+<code class="sourceCode R"><span><span class="fu"><a href="../reference/slice_dataset.html">slice_dataset</a></span><span class="op">(</span></span>
 <span>  input_dir <span class="op">=</span> <span class="st">"data/raw/large_images"</span>,</span>
 <span>  output_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset_sliced"</span>,</span>
 <span>  slice_size <span class="op">=</span> <span class="fl">1024</span>,</span>
 <span>  overlap <span class="op">=</span> <span class="fl">0.2</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
-</section><section class="level3"><h3 id="optional-pin-your-dataset">Optional: Pin Your Dataset<a class="anchor" aria-label="anchor" href="#optional-pin-your-dataset"></a>
+<p>This is usually most helpful for detection workflows. Segmentation currently trains on the prepared dataset the same way, but prediction does not yet use SAHI slicing for RF-DETR segmentation models.</p>
+</section><section class="level3"><h3 id="optional-pin-the-dataset">Optional: Pin the Dataset<a class="anchor" aria-label="anchor" href="#optional-pin-the-dataset"></a>
 </h3>
-<p>Pin datasets for versioning and easy reference:</p>
+<p>Pinning makes the training data reproducible and lets the resulting model record the exact dataset id/version used during training.</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Pin dataset to local board</span></span>
-<span><span class="fu"><a href="../reference/pin_dataset.html">pin_dataset</a></span><span class="op">(</span></span>
+<code class="sourceCode R"><span><span class="fu"><a href="../reference/pin_dataset.html">pin_dataset</a></span><span class="op">(</span></span>
 <span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
 <span>  dataset_id <span class="op">=</span> <span class="st">"my_dataset_v1"</span></span>
 <span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># List pinned datasets</span></span>
 <span><span class="fu"><a href="../reference/list_datasets.html">list_datasets</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
 </div>
-</section></section><section class="level2"><h2 id="local-training">Local Training<a class="anchor" aria-label="anchor" href="#local-training"></a>
+</section></section><section class="level2"><h2 id="start-training">Start Training<a class="anchor" aria-label="anchor" href="#start-training"></a>
 </h2>
-<p>Local training runs on your machine (CPU or GPU). This is the simplest way to train a model.</p>
-<section class="level3"><h3 id="basic-training">Basic Training<a class="anchor" aria-label="anchor" href="#basic-training"></a>
+<p>The main entry point is <code><a href="../reference/train_model.html">train_model()</a></code>. You can supply either a raw dataset directory or a previously pinned <code>dataset_id</code>.</p>
+<section class="level3"><h3 id="detection-example">Detection Example<a class="anchor" aria-label="anchor" href="#detection-example"></a>
 </h3>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb5"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Train a model locally</span></span>
-<span><span class="va">model_id</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
+<code class="sourceCode R"><span><span class="va">detector_id</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span></span>
+<span>  dataset_id <span class="op">=</span> <span class="st">"my_dataset_v1"</span>,</span>
 <span>  model_id <span class="op">=</span> <span class="st">"my_detector_v1"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">3</span>,           <span class="co"># Number of object classes</span></span>
-<span>  max_iter <span class="op">=</span> <span class="fl">12000</span>,          <span class="co"># Training iterations</span></span>
-<span>  device <span class="op">=</span> <span class="st">"cuda"</span>            <span class="co"># "cpu", "cuda", or "mps"</span></span>
+<span>  model_variant <span class="op">=</span> <span class="st">"small"</span>,</span>
+<span>  epochs <span class="op">=</span> <span class="fl">50</span>,</span>
+<span>  batch_size <span class="op">=</span> <span class="fl">2</span>,</span>
+<span>  device <span class="op">=</span> <span class="st">"cuda"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
-<p>The model will be automatically pinned to your local board (<code>.petrographer/</code>) with full metadata.</p>
-</section><section class="level3"><h3 id="key-parameters-explained">Key Parameters Explained<a class="anchor" aria-label="anchor" href="#key-parameters-explained"></a>
+</section><section class="level3"><h3 id="segmentation-example">Segmentation Example<a class="anchor" aria-label="anchor" href="#segmentation-example"></a>
 </h3>
-<p><strong>Dataset specification:</strong></p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Option 1: Use a directory path</span></span>
-<span><span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span>data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>, <span class="va">...</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Option 2: Use a pinned dataset ID</span></span>
-<span><span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span>dataset_id <span class="op">=</span> <span class="st">"my_dataset_v1"</span>, <span class="va">...</span><span class="op">)</span></span></code></pre></div>
-</div>
-<p><strong>Model architecture:</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb7"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Backbone options: "resnet50" (default), "resnet101", "resnext101"</span></span>
-<span><span class="va">backbone</span> <span class="op">=</span> <span class="st">"resnet50"</span></span>
-<span></span>
-<span><span class="co"># Freeze early layers for faster training (0-5)</span></span>
-<span><span class="co"># Higher = more frozen = faster training, less adaptation</span></span>
-<span><span class="va">freeze_at</span> <span class="op">=</span> <span class="fl">2</span>  <span class="co"># Freeze stem + res2 (recommended)</span></span></code></pre></div>
-</div>
-<p><strong>Training schedule:</strong></p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb8"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Iterations (depends on dataset size)</span></span>
-<span><span class="va">max_iter</span> <span class="op">=</span> <span class="fl">12000</span>     <span class="co"># ~1-2 hours on modern GPU</span></span>
-<span></span>
-<span><span class="co"># Learning rate (NULL = auto-scaling based on batch size and freeze_at)</span></span>
-<span><span class="va">learning_rate</span> <span class="op">=</span> <span class="cn">NULL</span>  <span class="co"># Let petrographer compute optimal rate</span></span>
-<span></span>
-<span><span class="co"># Batch size (NA = auto: 2 images per GPU)</span></span>
-<span><span class="va">ims_per_batch</span> <span class="op">=</span> <span class="cn">NA</span></span>
-<span></span>
-<span><span class="co"># Validation frequency</span></span>
-<span><span class="va">eval_period</span> <span class="op">=</span> <span class="fl">1000</span>    <span class="co"># Evaluate every 1000 iterations</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="what-happens-during-training">What Happens During Training<a class="anchor" aria-label="anchor" href="#what-happens-during-training"></a>
-</h3>
-<ol type="1">
-<li>
-<strong>Dataset validation</strong> - Checks COCO format and class consistency</li>
-<li>
-<strong>Config generation</strong> - Computes batch size, learning rate, workers</li>
-<li>
-<strong>Training</strong> - Calls Detectron2 via Python with:
-<ul>
-<li>WarmupCosineLR schedule</li>
-<li>Differential learning rates (0.1x backbone, 1.0x head)</li>
-<li>Data augmentations (flips, rotations, color jitter)</li>
-</ul>
-</li>
-<li>
-<strong>Auto-pinning</strong> - Saves model to <code>.petrographer/</code> with metadata</li>
-</ol></section></section><section class="level2"><h2 id="loading-and-testing-trained-models">Loading and Testing Trained Models<a class="anchor" aria-label="anchor" href="#loading-and-testing-trained-models"></a>
-</h2>
-<section class="level3"><h3 id="load-a-trained-model">Load a Trained Model<a class="anchor" aria-label="anchor" href="#load-a-trained-model"></a>
-</h3>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb9"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Load from local board (checks .petrographer/ first, then hub)</span></span>
-<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"my_detector_v1"</span>, device <span class="op">=</span> <span class="st">"cuda"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Alternatively, force local board</span></span>
-<span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"my_detector_v1"</span>, board <span class="op">=</span> <span class="st">"local"</span>, device <span class="op">=</span> <span class="st">"cuda"</span><span class="op">)</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="test-on-validation-images">Test on Validation Images<a class="anchor" aria-label="anchor" href="#test-on-validation-images"></a>
-</h3>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb10"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Get validation images</span></span>
-<span><span class="va">val_images</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://fs.r-lib.org/reference/dir_ls.html" class="external-link">dir_ls</a></span><span class="op">(</span><span class="st">"data/processed/my_dataset/valid"</span>, glob <span class="op">=</span> <span class="st">"*.jpg"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Test on a single image</span></span>
-<span><span class="va">results</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/predict.html">predict</a></span><span class="op">(</span><span class="va">model</span>, <span class="va">val_images</span><span class="op">[</span><span class="fl">1</span><span class="op">]</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># View detections</span></span>
-<span><span class="va">results</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://dplyr.tidyverse.org/reference/select.html" class="external-link">select</a></span><span class="op">(</span><span class="va">image_id</span>, <span class="va">category_name</span>, <span class="va">confidence</span>, <span class="va">area</span>, <span class="va">perimeter</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Test on multiple images</span></span>
-<span><span class="va">batch_results</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/predict_images.html">predict_images</a></span><span class="op">(</span></span>
-<span>  image_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset/valid"</span>,</span>
-<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
-<span>  output_dir <span class="op">=</span> <span class="st">"results/validation_test"</span></span>
+<code class="sourceCode R"><span><span class="va">segmenter_id</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span></span>
+<span>  dataset_id <span class="op">=</span> <span class="st">"my_dataset_v1"</span>,</span>
+<span>  model_id <span class="op">=</span> <span class="st">"my_segmenter_v1"</span>,</span>
+<span>  model_variant <span class="op">=</span> <span class="st">"seg_small"</span>,</span>
+<span>  epochs <span class="op">=</span> <span class="fl">50</span>,</span>
+<span>  batch_size <span class="op">=</span> <span class="fl">4</span>,</span>
+<span>  device <span class="op">=</span> <span class="st">"cuda"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
-</section></section><section class="level2"><h2 id="evaluating-training-results">Evaluating Training Results<a class="anchor" aria-label="anchor" href="#evaluating-training-results"></a>
+</section></section><section class="level2"><h2 id="local-vs-hpc-training">Local vs HPC Training<a class="anchor" aria-label="anchor" href="#local-vs-hpc-training"></a>
 </h2>
-<section class="level3"><h3 id="parse-training-metrics">Parse Training Metrics<a class="anchor" aria-label="anchor" href="#parse-training-metrics"></a>
+<p>Training mode is auto-detected:</p>
+<ul>
+<li>if <code><a href="https://rdrr.io/pkg/hipergator/man/hpg_configure.html" class="external-link">hipergator::hpg_configure()</a></code> has been set up, <code><a href="../reference/train_model.html">train_model()</a></code> uses the HPC path</li>
+<li>otherwise it runs locally</li>
+</ul>
+<p>That means the user-facing training call stays the same in both environments.</p>
+<section class="level3"><h3 id="local-training">Local Training<a class="anchor" aria-label="anchor" href="#local-training"></a>
 </h3>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb11"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Load metrics from training</span></span>
-<span><span class="va">eval_result</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/evaluate_training.html">evaluate_training</a></span><span class="op">(</span></span>
-<span>  model_dir <span class="op">=</span> <span class="fu"><a href="https://fs.r-lib.org/reference/path.html" class="external-link">path</a></span><span class="op">(</span><span class="st">".petrographer"</span>, <span class="va">model_id</span>, <span class="st">"current"</span><span class="op">)</span></span>
-<span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Summary statistics</span></span>
-<span><span class="va">eval_result</span><span class="op">$</span><span class="va">summary</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="plot-training-curves">Plot Training Curves<a class="anchor" aria-label="anchor" href="#plot-training-curves"></a>
+<p>Local training is the simplest option. It is appropriate when:</p>
+<ul>
+<li>your dataset is modest in size</li>
+<li>you have a suitable local GPU</li>
+<li>you are iterating on setup or parameters</li>
+</ul></section><section class="level3"><h3 id="hpc-training">HPC Training<a class="anchor" aria-label="anchor" href="#hpc-training"></a>
 </h3>
+<p>HPC training is useful when:</p>
+<ul>
+<li>models need longer wall time than you want to spend locally</li>
+<li>datasets are large</li>
+<li>you want to run multiple experiments or model variants</li>
+</ul>
+<p>Example configuration:</p>
 <div class="cell">
-<div class="sourceCode cell-code" id="cb12"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Loss curves</span></span>
-<span><span class="va">eval_result</span><span class="op">$</span><span class="va">training_data</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://dplyr.tidyverse.org/reference/select.html" class="external-link">select</a></span><span class="op">(</span><span class="va">iteration</span>, <span class="fu"><a href="https://tidyselect.r-lib.org/reference/starts_with.html" class="external-link">contains</a></span><span class="op">(</span><span class="st">"loss"</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu">tidyr</span><span class="fu">::</span><span class="fu"><a href="https://tidyr.tidyverse.org/reference/pivot_longer.html" class="external-link">pivot_longer</a></span><span class="op">(</span><span class="op">-</span><span class="va">iteration</span>, names_to <span class="op">=</span> <span class="st">"loss_type"</span>, values_to <span class="op">=</span> <span class="st">"loss"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/NA.html" class="external-link">is.na</a></span><span class="op">(</span><span class="va">loss</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/ggplot.html" class="external-link">ggplot</a></span><span class="op">(</span><span class="fu"><a href="https://ggplot2.tidyverse.org/reference/aes.html" class="external-link">aes</a></span><span class="op">(</span><span class="va">iteration</span>, <span class="va">loss</span>, color <span class="op">=</span> <span class="va">loss_type</span><span class="op">)</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/geom_path.html" class="external-link">geom_line</a></span><span class="op">(</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/facet_wrap.html" class="external-link">facet_wrap</a></span><span class="op">(</span><span class="op">~</span><span class="va">loss_type</span>, scales <span class="op">=</span> <span class="st">"free_y"</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/labs.html" class="external-link">labs</a></span><span class="op">(</span>title <span class="op">=</span> <span class="st">"Training Loss"</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/ggtheme.html" class="external-link">theme_minimal</a></span><span class="op">(</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Validation metrics</span></span>
-<span><span class="va">eval_result</span><span class="op">$</span><span class="va">validation_data</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu">tidyr</span><span class="fu">::</span><span class="fu"><a href="https://tidyr.tidyverse.org/reference/pivot_longer.html" class="external-link">pivot_longer</a></span><span class="op">(</span><span class="op">-</span><span class="va">iteration</span>, names_to <span class="op">=</span> <span class="st">"metric"</span>, values_to <span class="op">=</span> <span class="st">"value"</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="op">!</span><span class="fu"><a href="https://rdrr.io/r/base/NA.html" class="external-link">is.na</a></span><span class="op">(</span><span class="va">value</span><span class="op">)</span><span class="op">)</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/ggplot.html" class="external-link">ggplot</a></span><span class="op">(</span><span class="fu"><a href="https://ggplot2.tidyverse.org/reference/aes.html" class="external-link">aes</a></span><span class="op">(</span><span class="va">iteration</span>, <span class="va">value</span><span class="op">)</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/geom_path.html" class="external-link">geom_line</a></span><span class="op">(</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/geom_point.html" class="external-link">geom_point</a></span><span class="op">(</span>size <span class="op">=</span> <span class="fl">0.5</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/facet_wrap.html" class="external-link">facet_wrap</a></span><span class="op">(</span><span class="op">~</span><span class="va">metric</span>, scales <span class="op">=</span> <span class="st">"free_y"</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/labs.html" class="external-link">labs</a></span><span class="op">(</span>title <span class="op">=</span> <span class="st">"Validation Metrics"</span><span class="op">)</span> <span class="op">+</span></span>
-<span>  <span class="fu"><a href="https://ggplot2.tidyverse.org/reference/ggtheme.html" class="external-link">theme_minimal</a></span><span class="op">(</span><span class="op">)</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="evaluate-on-validation-set">Evaluate on Validation Set<a class="anchor" aria-label="anchor" href="#evaluate-on-validation-set"></a>
-</h3>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb13"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Run full COCO evaluation with SAHI</span></span>
-<span><span class="va">sahi_eval</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/evaluate_model_sahi.html">evaluate_model_sahi</a></span><span class="op">(</span></span>
-<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
-<span>  annotation_json <span class="op">=</span> <span class="st">"data/processed/my_dataset/valid/_annotations.coco.json"</span>,</span>
-<span>  image_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset/valid"</span>,</span>
-<span>  use_slicing <span class="op">=</span> <span class="cn">FALSE</span></span>
-<span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># COCO metrics</span></span>
-<span><span class="va">sahi_eval</span><span class="op">$</span><span class="va">summary</span> <span class="op">|&gt;</span></span>
-<span>  <span class="fu"><a href="https://dplyr.tidyverse.org/reference/filter.html" class="external-link">filter</a></span><span class="op">(</span><span class="va">metric</span> <span class="op"><a href="https://rdrr.io/r/base/match.html" class="external-link">%in%</a></span> <span class="fu"><a href="https://rdrr.io/r/base/c.html" class="external-link">c</a></span><span class="op">(</span><span class="st">"AP"</span>, <span class="st">"AP50"</span>, <span class="st">"AP75"</span>, <span class="st">"AR@100"</span><span class="op">)</span><span class="op">)</span></span></code></pre></div>
-</div>
-</section></section><section class="level2"><h2 id="hpc-training-advanced">HPC Training (Advanced)<a class="anchor" aria-label="anchor" href="#hpc-training-advanced"></a>
-</h2>
-<div>
-<blockquote>
-<p><strong>Note</strong></p>
-<p>This section is specific to users of <strong>University of Florida’s HiPerGator</strong>. However, the code demonstrates patterns that can be adapted to other SLURM-based HPC systems by modifying the <code>hipergator</code> package integration.</p>
-</blockquote>
-</div>
-<p>HPC training is useful for: - Large datasets requiring long training times - Multi-GPU training - Running multiple experiments in parallel</p>
-<section class="level3"><h3 id="one-time-setup">One-Time Setup<a class="anchor" aria-label="anchor" href="#one-time-setup"></a>
-</h3>
-<p>Configure your HPC connection once per session:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb14"><pre class="downlit sourceCode r">
+<div class="sourceCode cell-code" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va">hipergator</span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Configure HiPerGator connection</span></span>
 <span><span class="fu"><a href="https://rdrr.io/pkg/hipergator/man/hpg_configure.html" class="external-link">hpg_configure</a></span><span class="op">(</span></span>
 <span>  host <span class="op">=</span> <span class="st">"hpg"</span>,</span>
 <span>  base_dir <span class="op">=</span> <span class="st">"/blue/mygroup/myusername/petrographer"</span></span>
 <span><span class="op">)</span></span></code></pre></div>
 </div>
-<p>You can also set these via <code>.Renviron</code>:</p>
-<pre><code>PETROGRAPHER_HPC_HOST=hpg.rc.ufl.edu
-PETROGRAPHER_HPC_BASE_DIR=/blue/mygroup/myusername/petrographer</code></pre>
-</section><section class="level3"><h3 id="run-hpc-training">Run HPC Training<a class="anchor" aria-label="anchor" href="#run-hpc-training"></a>
-</h3>
-<p>Training mode is auto-detected based on <code>hipergator</code> configuration. Use the <strong>same</strong> <code><a href="../reference/train_model.html">train_model()</a></code> call:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb16"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Same call as local training - HPC mode auto-detected!</span></span>
-<span><span class="va">model_id</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
-<span>  model_id <span class="op">=</span> <span class="st">"my_detector_hpc_v1"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">3</span>,</span>
-<span>  max_iter <span class="op">=</span> <span class="fl">12000</span></span>
-<span>  <span class="co"># No hpc_* params needed - uses hipergator config!</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="resource-configuration">Resource Configuration<a class="anchor" aria-label="anchor" href="#resource-configuration"></a>
-</h3>
-<p>Customize HPC resources for your job:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb17"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">model_id</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
-<span>  model_id <span class="op">=</span> <span class="st">"my_large_model"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">5</span>,</span>
-<span>  max_iter <span class="op">=</span> <span class="fl">20000</span>,</span>
-<span></span>
-<span>  <span class="co"># HPC resource hints</span></span>
-<span>  gpus <span class="op">=</span> <span class="fl">2</span>,                    <span class="co"># Multi-GPU training</span></span>
-<span>  hpc_cpus_per_task <span class="op">=</span> <span class="fl">28</span>,      <span class="co"># CPUs (default: 14 per GPU)</span></span>
-<span>  hpc_mem <span class="op">=</span> <span class="st">"48gb"</span>,            <span class="co"># Memory (default: 24gb per GPU)</span></span>
-<span></span>
-<span>  <span class="co"># Batch size must be divisible by GPU count</span></span>
-<span>  ims_per_batch <span class="op">=</span> <span class="fl">16</span>           <span class="co"># 8 per GPU</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="how-hpc-training-works">How HPC Training Works<a class="anchor" aria-label="anchor" href="#how-hpc-training-works"></a>
-</h3>
-<p>Behind the scenes, <code><a href="../reference/train_model.html">train_model()</a></code>:</p>
-<ol type="1">
-<li>
-<p><strong>Uploads artifacts</strong> to HPC:</p>
-<ul>
-<li>Dataset → <code>base_dir/datasets/{dataset_id}/</code>
-</li>
-<li>Training script → <code>base_dir/scripts/train.py</code>
-</li>
-<li>Both use <code>rsync</code> - unchanged files are skipped!</li>
-</ul>
-</li>
-<li>
-<p><strong>Submits SLURM job</strong> with:</p>
-<ul>
-<li>Working directory: <code>base_dir</code>
-</li>
-<li>Command uses relative paths (clean, portable)</li>
-<li>GPU allocation via <code>hipergator</code> resource spec</li>
-</ul>
-</li>
-<li><p><strong>Monitors job</strong> until completion</p></li>
-<li>
-<p><strong>Downloads results</strong>:</p>
-<ul>
-<li>
-<code>model_best.pth</code> (weights)</li>
-<li>
-<code>config.yaml</code> (model config)</li>
-<li>
-<code>metadata.json</code> (class names)</li>
-<li>
-<code>metrics.json</code> (training history)</li>
-</ul>
-</li>
-<li><p><strong>Pins model</strong> to local board for easy loading</p></li>
-</ol></section><section class="level3"><h3 id="shared-directory-structure">Shared Directory Structure<a class="anchor" aria-label="anchor" href="#shared-directory-structure"></a>
-</h3>
-<p>HPC uses an efficient shared structure to avoid re-uploading:</p>
-<pre><code>/blue/base_dir/
-├── datasets/
-│   └── my_dataset_v1/          # Shared across all models
-│       ├── train/
-│       └── valid/
-├── scripts/
-│   └── train.py                # Shared script
-└── models/
-    └── my_detector_hpc_v1/
-        └── 20250113120000/     # Run ID (timestamp)
-            └── output/
-                ├── model_best.pth
-                ├── config.yaml
-                └── metadata.json</code></pre>
-<p>This means: - First training uploads everything - Subsequent trainings only upload changed files - Multiple models can share datasets and scripts</p>
-</section><section class="level3"><h3 id="monitoring-and-troubleshooting">Monitoring and Troubleshooting<a class="anchor" aria-label="anchor" href="#monitoring-and-troubleshooting"></a>
-</h3>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb19"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Check HPC connection</span></span>
-<span><span class="fu">hipergator</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/hipergator/man/hpg_check_connection.html" class="external-link">hpg_check_connection</a></span><span class="op">(</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># View your base directory</span></span>
-<span><span class="fu">hipergator</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/hipergator/man/hpg_show_base_dir.html" class="external-link">hpg_show_base_dir</a></span><span class="op">(</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># List running jobs (if you have access)</span></span>
-<span><span class="co"># hipergator provides job monitoring functions</span></span></code></pre></div>
-</div>
-<p>If training fails: 1. Check error messages in the R console 2. Verify <code>base_dir</code> exists on HPC 3. Ensure dataset paths are correct 4. Check GPU availability on your partition</p>
-</section></section><section class="level2"><h2 id="advanced-topics">Advanced Topics<a class="anchor" aria-label="anchor" href="#advanced-topics"></a>
+<p>Once configured, the same <code><a href="../reference/train_model.html">train_model()</a></code> call will submit through the HPC path instead of running locally.</p>
+</section></section><section class="level2"><h2 id="choose-a-model-variant">Choose a Model Variant<a class="anchor" aria-label="anchor" href="#choose-a-model-variant"></a>
 </h2>
-<section class="level3"><h3 id="custom-learning-rates">Custom Learning Rates<a class="anchor" aria-label="anchor" href="#custom-learning-rates"></a>
-</h3>
-<p>Override auto-scaling for fine control:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb20"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  data_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset"</span>,</span>
-<span>  model_id <span class="op">=</span> <span class="st">"my_model"</span>,</span>
-<span>  num_classes <span class="op">=</span> <span class="fl">3</span>,</span>
-<span>  learning_rate <span class="op">=</span> <span class="fl">0.0005</span>,  <span class="co"># Manual LR (head rate; backbone gets 0.1x)</span></span>
-<span>  max_iter <span class="op">=</span> <span class="fl">12000</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-<p>The default auto-scaling uses: - Batch size (linear scaling) - <code>freeze_at</code> (more frozen = higher LR) - Base rate: 0.001 for <code>freeze_at = 2</code></p>
-</section><section class="level3"><h3 id="backbone-selection">Backbone Selection<a class="anchor" aria-label="anchor" href="#backbone-selection"></a>
-</h3>
-<p>Choose a backbone based on your needs:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb21"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># ResNet50 (default) - Fast, good for most tasks</span></span>
-<span><span class="va">backbone</span> <span class="op">=</span> <span class="st">"resnet50"</span></span>
-<span></span>
-<span><span class="co"># ResNet101 - Deeper, better accuracy, slower</span></span>
-<span><span class="va">backbone</span> <span class="op">=</span> <span class="st">"resnet101"</span></span>
-<span></span>
-<span><span class="co"># ResNeXt101 - Best accuracy, slowest, needs more memory</span></span>
-<span><span class="va">backbone</span> <span class="op">=</span> <span class="st">"resnext101"</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="freeze-strategies">Freeze Strategies<a class="anchor" aria-label="anchor" href="#freeze-strategies"></a>
-</h3>
-<p>Control which layers to train:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb22"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># freeze_at = 0: Train entire backbone (slow, best adaptation)</span></span>
-<span><span class="co"># freeze_at = 1: Freeze stem only (good balance)</span></span>
-<span><span class="co"># freeze_at = 2: Freeze stem + res2 (default, faster)</span></span>
-<span><span class="co"># freeze_at = 3: Freeze stem + res2 + res3</span></span>
-<span><span class="co"># freeze_at = 4: Freeze stem + res2 + res3 + res4</span></span>
-<span><span class="co"># freeze_at = 5: Freeze entire backbone (fastest, least adaptation)</span></span>
-<span></span>
-<span><span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span></span>
-<span>  <span class="va">...</span>,</span>
-<span>  freeze_at <span class="op">=</span> <span class="fl">1</span>,  <span class="co"># Less frozen = slower but better domain adaptation</span></span>
-<span>  learning_rate <span class="op">=</span> <span class="cn">NULL</span>  <span class="co"># Auto-scale adjusts for freeze_at</span></span>
-<span><span class="op">)</span></span></code></pre></div>
-</div>
-</section><section class="level3"><h3 id="using-pinned-datasets">Using Pinned Datasets<a class="anchor" aria-label="anchor" href="#using-pinned-datasets"></a>
-</h3>
-<p>Pin datasets once, reuse many times:</p>
-<div class="cell">
-<div class="sourceCode cell-code" id="cb23"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Pin dataset</span></span>
-<span><span class="fu"><a href="../reference/pin_dataset.html">pin_dataset</a></span><span class="op">(</span><span class="st">"data/processed/my_dataset"</span>, <span class="st">"my_dataset_v1"</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Train multiple models with same dataset</span></span>
-<span><span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span>dataset_id <span class="op">=</span> <span class="st">"my_dataset_v1"</span>, model_id <span class="op">=</span> <span class="st">"model_a"</span>, <span class="va">...</span><span class="op">)</span></span>
-<span><span class="fu"><a href="../reference/train_model.html">train_model</a></span><span class="op">(</span>dataset_id <span class="op">=</span> <span class="st">"my_dataset_v1"</span>, model_id <span class="op">=</span> <span class="st">"model_b"</span>, <span class="va">...</span><span class="op">)</span></span></code></pre></div>
-</div>
-</section></section><section class="level2"><h2 id="publishing-to-hub-maintainers">Publishing to Hub (Maintainers)<a class="anchor" aria-label="anchor" href="#publishing-to-hub-maintainers"></a>
+<p>Detection variants:</p>
+<ul>
+<li><code>nano</code></li>
+<li><code>small</code></li>
+<li><code>medium</code></li>
+<li><code>large</code></li>
+</ul>
+<p>Segmentation variants:</p>
+<ul>
+<li><code>seg_nano</code></li>
+<li><code>seg_small</code></li>
+<li><code>seg_medium</code></li>
+<li><code>seg_large</code></li>
+<li><code>seg_xlarge</code></li>
+<li><code>seg_2xlarge</code></li>
+<li><code>seg_preview</code></li>
+</ul>
+<p>In general:</p>
+<ul>
+<li>smaller variants train faster and use less memory</li>
+<li>larger variants can improve accuracy but require more time and VRAM</li>
+</ul>
+<p><code>nano</code> / <code>small</code> are good starting points for detection. <code>seg_nano</code> / <code>seg_small</code> are good starting points for segmentation.</p>
+</section><section class="level2"><h2 id="what-training-produces">What Training Produces<a class="anchor" aria-label="anchor" href="#what-training-produces"></a>
 </h2>
-<p>To share models with the community, maintainers can publish to the public hub:</p>
+<p>Successful training pins a model to the local model board and writes:</p>
+<ul>
+<li><code>checkpoint_best_total.pth</code></li>
+<li><code>manifest.json</code></li>
+<li><code>training_summary.json</code></li>
+<li>RF-DETR artifacts such as <code>metrics.csv</code>, <code>hparams.yaml</code>, <code>log.txt</code>, or <code>results.json</code> when available</li>
+</ul>
+<p>The stable package contract is:</p>
+<ul>
+<li>
+<code>manifest.json</code> for model/task/category/artifact metadata</li>
+<li>
+<code>training_summary.json</code> for normalized training history and final metrics</li>
+</ul></section><section class="level2"><h2 id="evaluate-and-inspect-the-result">Evaluate and Inspect the Result<a class="anchor" aria-label="anchor" href="#evaluate-and-inspect-the-result"></a>
+</h2>
+<p>Load the trained model:</p>
 <div class="cell">
-<div class="sourceCode cell-code" id="cb24"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="co"># Create hub board (maintainers only)</span></span>
-<span><span class="va">hub_board</span> <span class="op">&lt;-</span> <span class="fu">pins</span><span class="fu">::</span><span class="fu"><a href="https://pins.rstudio.com/reference/board_folder.html" class="external-link">board_folder</a></span><span class="op">(</span></span>
-<span>  <span class="fu">here</span><span class="fu">::</span><span class="fu"><a href="https://here.r-lib.org/reference/here.html" class="external-link">here</a></span><span class="op">(</span><span class="st">"pkgdown/assets/pins"</span><span class="op">)</span>,</span>
-<span>  versioned <span class="op">=</span> <span class="cn">TRUE</span></span>
+<div class="sourceCode cell-code" id="cb8"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"my_detector_v1"</span>, board <span class="op">=</span> <span class="st">"local"</span>, device <span class="op">=</span> <span class="st">"cpu"</span><span class="op">)</span></span>
+<span><span class="va">model</span></span></code></pre></div>
+</div>
+<p>Inspect normalized training outputs:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb9"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">eval_result</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/evaluate_training.html">evaluate_training</a></span><span class="op">(</span>model_id <span class="op">=</span> <span class="st">"my_detector_v1"</span><span class="op">)</span></span>
+<span><span class="va">eval_result</span><span class="op">$</span><span class="va">summary</span></span></code></pre></div>
+</div>
+<section class="level3"><h3 id="detection-validation">Detection Validation<a class="anchor" aria-label="anchor" href="#detection-validation"></a>
+</h3>
+<p>Detection models can be evaluated with SAHI + COCO metrics:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb10"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">sahi_eval</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/evaluate_model_sahi.html">evaluate_model_sahi</a></span><span class="op">(</span></span>
+<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
+<span>  annotation_json <span class="op">=</span> <span class="st">"data/processed/my_dataset/valid/_annotations.coco.json"</span>,</span>
+<span>  image_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset/valid"</span>,</span>
+<span>  use_slicing <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  slice_size <span class="op">=</span> <span class="fl">640</span>,</span>
+<span>  overlap <span class="op">=</span> <span class="fl">0.2</span>,</span>
+<span>  max_dets <span class="op">=</span> <span class="fl">300</span></span>
 <span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Pin model to hub</span></span>
-<span><span class="fu"><a href="../reference/pin_model.html">pin_model</a></span><span class="op">(</span></span>
-<span>  model_dir <span class="op">=</span> <span class="st">".petrographer/my_detector_v1/current"</span>,</span>
-<span>  model_id <span class="op">=</span> <span class="st">"my_detector_v1"</span>,</span>
-<span>  board <span class="op">=</span> <span class="va">hub_board</span>,</span>
-<span>  metadata <span class="op">=</span> <span class="fu"><a href="https://rdrr.io/r/base/list.html" class="external-link">list</a></span><span class="op">(</span></span>
-<span>    description <span class="op">=</span> <span class="st">"Shell detector optimized for XPL images"</span>,</span>
-<span>    backbone <span class="op">=</span> <span class="st">"resnet50"</span>,</span>
-<span>    num_classes <span class="op">=</span> <span class="fl">5</span></span>
-<span>  <span class="op">)</span></span>
+<span><span class="va">sahi_eval</span><span class="op">$</span><span class="va">summary</span></span></code></pre></div>
+</div>
+</section><section class="level3"><h3 id="segmentation-validation">Segmentation Validation<a class="anchor" aria-label="anchor" href="#segmentation-validation"></a>
+</h3>
+<p>Segmentation currently does not use the SAHI evaluation path. Instead, the main downstream value is prediction plus morphology analysis.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb11"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">seg_model</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">"my_segmenter_v1"</span>, board <span class="op">=</span> <span class="st">"local"</span>, device <span class="op">=</span> <span class="st">"cpu"</span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">seg_batch</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/analyze_segmentation_dir.html">analyze_segmentation_dir</a></span><span class="op">(</span></span>
+<span>  input_dir <span class="op">=</span> <span class="st">"data/processed/my_dataset/valid"</span>,</span>
+<span>  model <span class="op">=</span> <span class="va">seg_model</span>,</span>
+<span>  output_dir <span class="op">=</span> <span class="st">"results/segmentation_batch"</span></span>
 <span><span class="op">)</span></span>
 <span></span>
-<span><span class="co"># Update manifest</span></span>
-<span><span class="fu">pins</span><span class="fu">::</span><span class="fu"><a href="https://pins.rstudio.com/reference/write_board_manifest.html" class="external-link">write_board_manifest</a></span><span class="op">(</span><span class="va">hub_board</span><span class="op">)</span></span>
-<span></span>
-<span><span class="co"># Deploy via pkgdown</span></span>
-<span><span class="co"># pkgdown::build_site()</span></span>
-<span><span class="co"># git commit &amp; push</span></span></code></pre></div>
+<span><span class="va">seg_batch</span><span class="op">$</span><span class="va">summary</span></span>
+<span><span class="va">seg_batch</span><span class="op">$</span><span class="va">population_stats</span></span></code></pre></div>
 </div>
-<p>See <code>data-raw/publish-to-hub.R</code> in the package source for the complete workflow.</p>
-</section><section class="level2"><h2 id="next-steps">Next Steps<a class="anchor" aria-label="anchor" href="#next-steps"></a>
+</section></section><section class="level2"><h2 id="maintainership-and-publishing">Maintainership and Publishing<a class="anchor" aria-label="anchor" href="#maintainership-and-publishing"></a>
 </h2>
+<p>Every successful training run is pinned locally. Maintainers can copy a completed local pin to a shared board with <code><a href="../reference/pin_model.html">pin_model()</a></code> and then refresh the destination board manifest with <code><a href="https://pins.rstudio.com/reference/write_board_manifest.html" class="external-link">pins::write_board_manifest()</a></code>.</p>
+<p>See <code>inst/notebooks/templates/model_from_pretrained.qmd</code> for the maintainer publishing workflow.</p>
+</section><section class="level2"><h2 id="troubleshooting">Troubleshooting<a class="anchor" aria-label="anchor" href="#troubleshooting"></a>
+</h2>
+<p><strong>CUDA out of memory</strong></p>
 <ul>
-<li>
-<strong>Prediction workflow:</strong> See <code><a href="../articles/whole-slide-basics.html">vignette("whole-slide-basics")</a></code> for inference</li>
-<li>
-<strong>Model library:</strong> See <code><a href="../articles/model-library.html">vignette("model-library")</a></code> for available pretrained models</li>
-<li>
-<strong>Function reference:</strong> See <code><a href="../reference/train_model.html">?train_model</a></code>, <code><a href="../reference/from_pretrained.html">?from_pretrained</a></code>, <code><a href="../reference/evaluate_model_sahi.html">?evaluate_model_sahi</a></code>
+<li>lower <code>batch_size</code>
 </li>
-</ul></section><section class="level2"><h2 id="troubleshooting">Troubleshooting<a class="anchor" aria-label="anchor" href="#troubleshooting"></a>
-</h2>
-<p><strong>Training fails with CUDA out of memory:</strong> - Reduce <code>ims_per_batch</code> (e.g., try 4 or 2) - Use a smaller <code>backbone</code> (resnet50 instead of resnext101) - Increase <code>freeze_at</code> to train fewer parameters</p>
-<p><strong>Training is very slow:</strong> - Ensure <code>device = "cuda"</code> (not “cpu”) - Check GPU availability: <code>reticulate::py_run_string("import torch; print(torch.cuda.is_available())")</code> - Reduce <code>eval_period</code> (evaluate less frequently)</p>
-<p><strong>Class names not showing in predictions:</strong> - Ensure your COCO JSON has a <code>categories</code> list with <code>name</code> fields - Check <code>metadata.json</code> was created: <code>list.files(".petrographer/my_model/current")</code> - The model should load <code>category_mapping</code> automatically</p>
-<p><strong>HPC job fails:</strong> - Verify <code>base_dir</code> exists: <code><a href="https://rdrr.io/pkg/hipergator/man/hpg_show_base_dir.html" class="external-link">hipergator::hpg_show_base_dir()</a></code> - Check dataset paths are correct relative to <code>data_dir</code> - Ensure GPU partition has availability</p>
-</section><script id="quarto-html-after-body" type="application/javascript">
+<li>start with a smaller variant</li>
+<li>consider detection before segmentation if masks are not strictly required</li>
+</ul>
+<p><strong>Training is slow</strong></p>
+<ul>
+<li>make sure you are not accidentally training on CPU</li>
+<li>use a smaller variant for initial iteration</li>
+<li>prefer HPC for long or repeated runs</li>
+</ul>
+<p><strong>Predictions are unlabeled or mislabeled</strong></p>
+<ul>
+<li>confirm the dataset <code>categories</code> are correct before training</li>
+<li>inspect <code>model$manifest$categories</code> after loading</li>
+</ul>
+<p><strong>Need a runnable example</strong></p>
+<ul>
+<li>use <code>inst/notebooks/templates/train_model.qmd</code> as the executable template</li>
+<li>use the <code>ops/</code> notebooks only for maintainer or library-building workflows</li>
+</ul></section><script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
       var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
       var mailtoRegex = new RegExp(/^mailto:/);
@@ -619,7 +402,7 @@ PETROGRAPHER_HPC_BASE_DIR=/blue/mygroup/myusername/petrographer</code></pre>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.1.3.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
 </div>
 
     </footer>

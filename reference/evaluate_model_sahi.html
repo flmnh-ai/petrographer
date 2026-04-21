@@ -24,8 +24,9 @@ prediction table for further analysis."><meta property="og:image" content="https
       <ul class="navbar-nav me-auto"><li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
-    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Detection Models</a></li>
+  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/analyzing-predictions.html">Analyzing Predictions</a></li>
+    <li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
+    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Models</a></li>
     <li><a class="dropdown-item" href="../articles/whole-slide-basics.html">Whole-Slide Prediction Basics</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -58,7 +59,7 @@ prediction table for further analysis.</p>
 <span>  <span class="va">annotation_json</span>,</span>
 <span>  image_dir <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  use_slicing <span class="op">=</span> <span class="cn">TRUE</span>,</span>
-<span>  slice_size <span class="op">=</span> <span class="fl">512</span>,</span>
+<span>  slice_size <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  overlap <span class="op">=</span> <span class="fl">0.2</span>,</span>
 <span>  max_images <span class="op">=</span> <span class="cn">NULL</span>,</span>
 <span>  save_predictions <span class="op">=</span> <span class="cn">NULL</span>,</span>
@@ -90,7 +91,7 @@ annotation file.</p></dd>
 
 
 <dt id="arg-slice-size">slice_size<a class="anchor" aria-label="anchor" href="#arg-slice-size"></a></dt>
-<dd><p>Slice size for SAHI inference (pixels, default 512).</p></dd>
+<dd><p>Slice size for SAHI inference (pixels, default: use model's resolution)</p></dd>
 
 
 <dt id="arg-overlap">overlap<a class="anchor" aria-label="anchor" href="#arg-overlap"></a></dt>
@@ -130,7 +131,7 @@ smoke tests).</p></dd>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.1.3.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
 </div>
 
     </footer></div>

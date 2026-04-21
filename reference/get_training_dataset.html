@@ -20,8 +20,9 @@ This ensures reproducibility by downloading the specific version from pins."><me
       <ul class="navbar-nav me-auto"><li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
-    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Detection Models</a></li>
+  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/analyzing-predictions.html">Analyzing Predictions</a></li>
+    <li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
+    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Models</a></li>
     <li><a class="dropdown-item" href="../articles/whole-slide-basics.html">Whole-Slide Prediction Basics</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -70,11 +71,16 @@ This ensures reproducibility by downloading the specific version from pins.</p>
     <div class="section level2">
     <h2 id="ref-examples">Examples<a class="anchor" aria-label="anchor" href="#ref-examples"></a></h2>
     <div class="sourceCode"><pre class="sourceCode r"><code><span class="r-in"><span><span class="kw">if</span> <span class="op">(</span><span class="cn">FALSE</span><span class="op">)</span> <span class="op">{</span> <span class="co"># \dontrun{</span></span></span>
-<span class="r-in"><span><span class="co"># Get the dataset used to train a model</span></span></span>
+<span class="r-in"><span><span class="co"># Retrieve the exact dataset version used to train a model. Returns a</span></span></span>
+<span class="r-in"><span><span class="co"># .tar.gz path; `train_model()` and `validate_dataset()` accept this directly</span></span></span>
+<span class="r-in"><span><span class="co"># and extract transparently.</span></span></span>
 <span class="r-in"><span><span class="va">dataset_path</span> <span class="op">&lt;-</span> <span class="fu">get_training_dataset</span><span class="op">(</span><span class="st">"my_model"</span><span class="op">)</span></span></span>
 <span class="r-in"><span></span></span>
-<span class="r-in"><span><span class="co"># Can then use this to retrain or analyze</span></span></span>
+<span class="r-in"><span><span class="co"># Retrain on the same data</span></span></span>
 <span class="r-in"><span><span class="fu"><a href="train_model.html">train_model</a></span><span class="op">(</span>data_dir <span class="op">=</span> <span class="va">dataset_path</span>, model_id <span class="op">=</span> <span class="st">"my_model_v2"</span>, <span class="va">...</span><span class="op">)</span></span></span>
+<span class="r-in"><span></span></span>
+<span class="r-in"><span><span class="co"># Or inspect without retraining</span></span></span>
+<span class="r-in"><span><span class="fu"><a href="validate_dataset.html">validate_dataset</a></span><span class="op">(</span><span class="va">dataset_path</span><span class="op">)</span></span></span>
 <span class="r-in"><span><span class="op">}</span> <span class="co"># }</span></span></span>
 </code></pre></div>
     </div>
@@ -87,7 +93,7 @@ This ensures reproducibility by downloading the specific version from pins.</p>
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.1.3.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
 </div>
 
     </footer></div>

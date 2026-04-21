@@ -1,0 +1,140 @@
+# Whole-Slide Prediction Basics
+
+This vignette walks through a whole-slide style inference workflow using
+a pretrained **detection** model. The focus is:
+
+- loading a pretrained model
+- running sliced inference on a large image
+- reviewing overlays and tabular outputs
+- summarizing detections for downstream analysis
+
+For now this is detection-first. Segmentation can also be run on large
+images, but its workflow is different because RF-DETR segmentation does
+not yet use the SAHI path in this package.
+
+## Load the Toolkit
+
+``` r
+library(petrographer)
+library(dplyr)
+library(fs)
+```
+
+## Point to a Large Image
+
+Replace the placeholder path with a whole-slide image or any large
+thin-section image you want to analyze.
+
+``` r
+wsi_path <- "path/to/whole_slide_image.tif"
+file_exists(wsi_path)
+```
+
+## Load a Pretrained Model
+
+Use
+[`from_pretrained()`](https://flmnh-ai.github.io/petrographer/reference/from_pretrained.md)
+to load a detector from your local board or the public hub.
+
+``` r
+model <- from_pretrained(
+  model_id = "inclusions_small",
+  device = "cpu",
+  confidence = 0.5
+)
+
+model
+```
+
+The loaded object keeps the parsed manifest and training summary, so you
+can inspect provenance if needed:
+
+``` r
+model$manifest$model
+model$training_summary$training
+```
+
+## Run SAHI Inference
+
+For large images, sliced inference usually works better than trying to
+process the entire image at once. `slice_size` and `overlap` let you
+trade off runtime, memory use, and boundary stability.
+
+``` r
+output_dir <- path("results", path_file(path_ext_remove(wsi_path)))
+
+predictions <- predict_image(
+  image_path = wsi_path,
+  model = model,
+  use_slicing = TRUE,
+  slice_size = 1024,
+  overlap = 0.2,
+  output_dir = output_dir,
+  save_visualizations = TRUE
+)
+
+predictions
+```
+
+The returned tibble contains one row per detected object, including
+class labels, confidence scores, bounding-box-derived geometry, and
+summary fields added by `enhance_results()`.
+
+## Review the Overlay
+
+``` r
+dir_ls(output_dir)
+
+viz_path <- dir_ls(output_dir, glob = "*_prediction.png", fail = FALSE)
+if (length(viz_path)) {
+  knitr::include_graphics(viz_path[[1]])
+}
+```
+
+## Summarize Detections
+
+``` r
+per_image <- summarize_by_image(predictions)
+per_image
+
+population <- get_population_stats(predictions)
+population
+```
+
+These summaries are useful for:
+
+- slide-level QA
+- comparing slides or treatment groups
+- spotting large shifts in count or size distributions
+
+## Batch Process a Directory
+
+Once you are happy with the settings on one image, scale out to a
+directory.
+
+``` r
+batch_results <- predict_images(
+  input_dir = "path/to/whole_slide_directory",
+  model = model,
+  use_slicing = TRUE,
+  slice_size = 1024,
+  overlap = 0.2,
+  output_dir = "results/batch_whole_slides",
+  save_visualizations = TRUE
+)
+
+batch_results
+```
+
+## Next Steps
+
+- adjust `slice_size` and `overlap` to match your image scale and memory
+  budget
+- filter `predictions` with tidyverse tools for class-specific summaries
+- use
+  [`summarize_by_image()`](https://flmnh-ai.github.io/petrographer/reference/summarize_by_image.md)
+  and
+  [`get_population_stats()`](https://flmnh-ai.github.io/petrographer/reference/get_population_stats.md)
+  for reporting
+- for segmentation-oriented workflows, use the training and prediction
+  templates/notebooks rather than this detection-first vignette

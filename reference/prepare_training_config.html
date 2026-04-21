@@ -18,8 +18,9 @@
       <ul class="navbar-nav me-auto"><li class="active nav-item"><a class="nav-link" href="../reference/index.html">Reference</a></li>
 <li class="nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
-  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
-    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Detection Models</a></li>
+  <ul class="dropdown-menu" aria-labelledby="dropdown-articles"><li><a class="dropdown-item" href="../articles/analyzing-predictions.html">Analyzing Predictions</a></li>
+    <li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
+    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Models</a></li>
     <li><a class="dropdown-item" href="../articles/whole-slide-basics.html">Whole-Slide Prediction Basics</a></li>
   </ul></li>
 <li class="nav-item"><a class="nav-link" href="../news/index.html">Changelog</a></li>
@@ -49,19 +50,20 @@
 <span>  <span class="va">dataset_id</span>,</span>
 <span>  <span class="va">dataset_version</span>,</span>
 <span>  <span class="va">model_id</span>,</span>
-<span>  <span class="va">num_classes</span>,</span>
-<span>  <span class="va">backbone</span>,</span>
-<span>  <span class="va">freeze_at</span>,</span>
-<span>  <span class="va">max_iter</span>,</span>
+<span>  <span class="va">model_variant</span>,</span>
+<span>  <span class="va">resolution</span>,</span>
+<span>  <span class="va">epochs</span>,</span>
+<span>  <span class="va">grad_accum_steps</span>,</span>
 <span>  <span class="va">learning_rate</span>,</span>
 <span>  <span class="va">device</span>,</span>
-<span>  <span class="va">eval_period</span>,</span>
-<span>  <span class="va">checkpoint_period</span>,</span>
-<span>  <span class="va">ims_per_batch</span>,</span>
+<span>  <span class="va">batch_size</span>,</span>
+<span>  <span class="va">use_amp</span>,</span>
+<span>  <span class="va">amp_dtype</span>,</span>
+<span>  <span class="va">gradient_checkpointing</span>,</span>
 <span>  <span class="va">num_workers</span>,</span>
-<span>  <span class="va">hpc_cpus_per_task</span>,</span>
-<span>  <span class="va">hpc_mem</span>,</span>
-<span>  <span class="va">gpus</span></span>
+<span>  <span class="va">time_hours</span>,</span>
+<span>  <span class="va">validate_every</span>,</span>
+<span>  <span class="va">early_stopping_patience</span></span>
 <span><span class="op">)</span></span></code></pre></div>
     </div>
 
@@ -74,7 +76,7 @@
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.1.3.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
 </div>
 
     </footer></div>

@@ -1,0 +1,288 @@
+# Training Custom Models
+
+This vignette explains the current `petrographer` training workflow at a
+high level. It covers:
+
+- preparing and validating a dataset
+- deciding whether to train detection or segmentation
+- choosing between local and HPC execution
+- understanding the artifacts produced by training
+
+For a runnable end-to-end template, see
+`inst/notebooks/templates/train_model.qmd`.
+
+## Choose a Training Task
+
+`petrographer` supports two RF-DETR training paths:
+
+- **Detection**: bounding boxes with SAHI-based sliced inference at
+  predict time
+- **Segmentation**: instance masks with direct morphology analysis
+
+Use detection when you mainly need counts, locations, and class labels.
+Use segmentation when you need mask-derived measurements such as area,
+eccentricity, circularity, or orientation.
+
+## Prepare the Dataset
+
+Training expects a COCO-style dataset with `train/` and `valid/` splits.
+
+``` r
+library(petrographer)
+
+validate_dataset("data/processed/my_dataset")
+```
+
+Expected structure:
+
+    my_dataset/
+    ├── train/
+    │   ├── _annotations.coco.json
+    │   └── *.jpg / *.png
+    └── valid/
+        ├── _annotations.coco.json
+        └── *.jpg / *.png
+
+### Optional: Slice Large Images
+
+If the source images are very large or contain many small objects,
+slicing can make training more stable and improve downstream detection
+performance.
+
+``` r
+slice_dataset(
+  input_dir = "data/raw/large_images",
+  output_dir = "data/processed/my_dataset_sliced",
+  slice_size = 1024,
+  overlap = 0.2
+)
+```
+
+This is usually most helpful for detection workflows. Segmentation
+currently trains on the prepared dataset the same way, but prediction
+does not yet use SAHI slicing for RF-DETR segmentation models.
+
+### Optional: Pin the Dataset
+
+Pinning makes the training data reproducible and lets the resulting
+model record the exact dataset id/version used during training.
+
+``` r
+pin_dataset(
+  data_dir = "data/processed/my_dataset",
+  dataset_id = "my_dataset_v1"
+)
+
+list_datasets()
+```
+
+## Start Training
+
+The main entry point is
+[`train_model()`](https://flmnh-ai.github.io/petrographer/reference/train_model.md).
+You can supply either a raw dataset directory or a previously pinned
+`dataset_id`.
+
+### Detection Example
+
+``` r
+detector_id <- train_model(
+  dataset_id = "my_dataset_v1",
+  model_id = "my_detector_v1",
+  model_variant = "small",
+  epochs = 50,
+  batch_size = 2,
+  device = "cuda"
+)
+```
+
+### Segmentation Example
+
+``` r
+segmenter_id <- train_model(
+  dataset_id = "my_dataset_v1",
+  model_id = "my_segmenter_v1",
+  model_variant = "seg_small",
+  epochs = 50,
+  batch_size = 4,
+  device = "cuda"
+)
+```
+
+## Local vs HPC Training
+
+Training mode is auto-detected:
+
+- if
+  [`hipergator::hpg_configure()`](https://rdrr.io/pkg/hipergator/man/hpg_configure.html)
+  has been set up,
+  [`train_model()`](https://flmnh-ai.github.io/petrographer/reference/train_model.md)
+  uses the HPC path
+- otherwise it runs locally
+
+That means the user-facing training call stays the same in both
+environments.
+
+### Local Training
+
+Local training is the simplest option. It is appropriate when:
+
+- your dataset is modest in size
+- you have a suitable local GPU
+- you are iterating on setup or parameters
+
+### HPC Training
+
+HPC training is useful when:
+
+- models need longer wall time than you want to spend locally
+- datasets are large
+- you want to run multiple experiments or model variants
+
+Example configuration:
+
+``` r
+library(hipergator)
+
+hpg_configure(
+  host = "hpg",
+  base_dir = "/blue/mygroup/myusername/petrographer"
+)
+```
+
+Once configured, the same
+[`train_model()`](https://flmnh-ai.github.io/petrographer/reference/train_model.md)
+call will submit through the HPC path instead of running locally.
+
+## Choose a Model Variant
+
+Detection variants:
+
+- `nano`
+- `small`
+- `medium`
+- `large`
+
+Segmentation variants:
+
+- `seg_nano`
+- `seg_small`
+- `seg_medium`
+- `seg_large`
+- `seg_xlarge`
+- `seg_2xlarge`
+- `seg_preview`
+
+In general:
+
+- smaller variants train faster and use less memory
+- larger variants can improve accuracy but require more time and VRAM
+
+`nano` / `small` are good starting points for detection. `seg_nano` /
+`seg_small` are good starting points for segmentation.
+
+## What Training Produces
+
+Successful training pins a model to the local model board and writes:
+
+- `checkpoint_best_total.pth`
+- `manifest.json`
+- `training_summary.json`
+- RF-DETR artifacts such as `metrics.csv`, `hparams.yaml`, `log.txt`, or
+  `results.json` when available
+
+The stable package contract is:
+
+- `manifest.json` for model/task/category/artifact metadata
+- `training_summary.json` for normalized training history and final
+  metrics
+
+## Evaluate and Inspect the Result
+
+Load the trained model:
+
+``` r
+model <- from_pretrained("my_detector_v1", board = "local", device = "cpu")
+model
+```
+
+Inspect normalized training outputs:
+
+``` r
+eval_result <- evaluate_training(model_id = "my_detector_v1")
+eval_result$summary
+```
+
+### Detection Validation
+
+Detection models can be evaluated with SAHI + COCO metrics:
+
+``` r
+sahi_eval <- evaluate_model_sahi(
+  model = model,
+  annotation_json = "data/processed/my_dataset/valid/_annotations.coco.json",
+  image_dir = "data/processed/my_dataset/valid",
+  use_slicing = TRUE,
+  slice_size = 640,
+  overlap = 0.2,
+  max_dets = 300
+)
+
+sahi_eval$summary
+```
+
+### Segmentation Validation
+
+Segmentation currently does not use the SAHI evaluation path. Instead,
+the main downstream value is prediction plus morphology analysis.
+
+``` r
+seg_model <- from_pretrained("my_segmenter_v1", board = "local", device = "cpu")
+
+seg_batch <- analyze_segmentation_dir(
+  input_dir = "data/processed/my_dataset/valid",
+  model = seg_model,
+  output_dir = "results/segmentation_batch"
+)
+
+seg_batch$summary
+seg_batch$population_stats
+```
+
+## Maintainership and Publishing
+
+Every successful training run is pinned locally. Maintainers can copy a
+completed local pin to a shared board with
+[`pin_model()`](https://flmnh-ai.github.io/petrographer/reference/pin_model.md)
+and then refresh the destination board manifest with
+[`pins::write_board_manifest()`](https://pins.rstudio.com/reference/write_board_manifest.html).
+
+See `inst/notebooks/templates/model_from_pretrained.qmd` for the
+maintainer publishing workflow.
+
+## Troubleshooting
+
+**CUDA out of memory**
+
+- lower `batch_size`
+- start with a smaller variant
+- consider detection before segmentation if masks are not strictly
+  required
+
+**Training is slow**
+
+- make sure you are not accidentally training on CPU
+- use a smaller variant for initial iteration
+- prefer HPC for long or repeated runs
+
+**Predictions are unlabeled or mislabeled**
+
+- confirm the dataset `categories` are correct before training
+- inspect `model$manifest$categories` after loading
+
+**Need a runnable example**
+
+- use `inst/notebooks/templates/train_model.qmd` as the executable
+  template
+- use the `ops/` notebooks only for maintainer or library-building
+  workflows

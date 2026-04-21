@@ -36,8 +36,9 @@
 <li class="active nav-item dropdown">
   <button class="nav-link dropdown-toggle" type="button" id="dropdown-articles" data-bs-toggle="dropdown" aria-expanded="false" aria-haspopup="true">Articles</button>
   <ul class="dropdown-menu" aria-labelledby="dropdown-articles">
-<li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
-    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Detection Models</a></li>
+<li><a class="dropdown-item" href="../articles/analyzing-predictions.html">Analyzing Predictions</a></li>
+    <li><a class="dropdown-item" href="../articles/model-library.html">Model &amp; Dataset Library</a></li>
+    <li><a class="dropdown-item" href="../articles/training-models.html">Training Custom Models</a></li>
     <li><a class="dropdown-item" href="../articles/whole-slide-basics.html">Whole-Slide Prediction Basics</a></li>
   </ul>
 </li>
@@ -70,84 +71,119 @@
 
 
 
-    <p>This vignette walks through a complete whole-slide inference workflow using <code>petrographer</code>. It mirrors the experience of a user who has a scanned thin section, wants to run the pretrained detector with SAHI slicing, and then review both the visual overlays and quantitative statistics.</p>
+    <p>This vignette walks through a whole-slide style inference workflow using a pretrained <strong>detection</strong> model. The focus is:</p>
+<ul>
+<li>loading a pretrained model</li>
+<li>running sliced inference on a large image</li>
+<li>reviewing overlays and tabular outputs</li>
+<li>summarizing detections for downstream analysis</li>
+</ul>
+<p>For now this is detection-first. Segmentation can also be run on large images, but its workflow is different because RF-DETR segmentation does not yet use the SAHI path in this package.</p>
 <section class="level2"><h2 id="load-the-toolkit">Load the Toolkit<a class="anchor" aria-label="anchor" href="#load-the-toolkit"></a>
 </h2>
-<p>The package ships with all high-level helpers. Load it alongside a few tidy utilities you may want for inspection.</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://flmnh-ai.github.io/petrographer/">petrographer</a></span><span class="op">)</span></span>
 <span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://dplyr.tidyverse.org" class="external-link">dplyr</a></span><span class="op">)</span></span>
 <span><span class="kw"><a href="https://rdrr.io/r/base/library.html" class="external-link">library</a></span><span class="op">(</span><span class="va"><a href="https://fs.r-lib.org" class="external-link">fs</a></span><span class="op">)</span></span></code></pre></div>
 </div>
-</section><section class="level2"><h2 id="point-to-your-whole-slide-image">Point to Your Whole-Slide Image<a class="anchor" aria-label="anchor" href="#point-to-your-whole-slide-image"></a>
+</section><section class="level2"><h2 id="point-to-a-large-image">Point to a Large Image<a class="anchor" aria-label="anchor" href="#point-to-a-large-image"></a>
 </h2>
-<p>Set the path to the slide you want to analyse. Replace the placeholder with your <code>.svs</code>, <code>.tif</code>, or other supported image file.</p>
+<p>Replace the placeholder path with a whole-slide image or any large thin-section image you want to analyze.</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">wsi_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://rdrr.io/r/base/system.file.html" class="external-link">system.file</a></span><span class="op">(</span><span class="st">"extdata"</span>, <span class="st">"test_image.jpg"</span>, package <span class="op">=</span> <span class="st">"petrographer"</span><span class="op">)</span></span>
+<code class="sourceCode R"><span><span class="va">wsi_path</span> <span class="op">&lt;-</span> <span class="st">"path/to/whole_slide_image.tif"</span></span>
 <span><span class="fu"><a href="https://fs.r-lib.org/reference/file_access.html" class="external-link">file_exists</a></span><span class="op">(</span><span class="va">wsi_path</span><span class="op">)</span></span></code></pre></div>
 </div>
-<p>Swap in your <code>.svs</code>, <code>.tif</code>, or other supported whole-slide file once you are ready to run the full workflow.</p>
-</section><section class="level2"><h2 id="cache-a-pretrained-model">Cache a Pretrained Model<a class="anchor" aria-label="anchor" href="#cache-a-pretrained-model"></a>
+</section><section class="level2"><h2 id="load-a-pretrained-model">Load a Pretrained Model<a class="anchor" aria-label="anchor" href="#load-a-pretrained-model"></a>
 </h2>
-<p>Pretrained weights are hosted on the petrographer hub. Install (or refresh) the pin you need, then instantiate the R-side wrapper. Replace <code>model_id</code> with whichever detector matches your slide.</p>
+<p>Use <code><a href="../reference/from_pretrained.html">from_pretrained()</a></code> to load a detector from your local board or the public hub.</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="downlit sourceCode r">
-<code class="sourceCode R"><span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span><span class="st">'inclusions_shell'</span><span class="op">)</span></span></code></pre></div>
+<code class="sourceCode R"><span><span class="va">model</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/from_pretrained.html">from_pretrained</a></span><span class="op">(</span></span>
+<span>  model_id <span class="op">=</span> <span class="st">"inclusions_small"</span>,</span>
+<span>  device <span class="op">=</span> <span class="st">"cpu"</span>,</span>
+<span>  confidence <span class="op">=</span> <span class="fl">0.5</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">model</span></span></code></pre></div>
 </div>
-<p><code>pg_install_pretrained()</code> downloads the pin once and reuses the cache next time. The returned <code>PetrographyModel</code> retains the manifest so you can inspect provenance or training metadata as needed.</p>
-</section><section class="level2"><h2 id="run-sahi-inference-with-custom-strides">Run SAHI Inference with Custom Strides<a class="anchor" aria-label="anchor" href="#run-sahi-inference-with-custom-strides"></a>
-</h2>
-<p>Whole-slide images are large, so enabling SAHI slicing keeps detections accurate while fitting within GPU or CPU memory. Control the stride through <code>slice_size</code> and <code>overlap</code>.</p>
+<p>The loaded object keeps the parsed manifest and training summary, so you can inspect provenance if needed:</p>
 <div class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">model</span><span class="op">$</span><span class="va">manifest</span><span class="op">$</span><span class="va">model</span></span>
+<span><span class="va">model</span><span class="op">$</span><span class="va">training_summary</span><span class="op">$</span><span class="va">training</span></span></code></pre></div>
+</div>
+</section><section class="level2"><h2 id="run-sahi-inference">Run SAHI Inference<a class="anchor" aria-label="anchor" href="#run-sahi-inference"></a>
+</h2>
+<p>For large images, sliced inference usually works better than trying to process the entire image at once. <code>slice_size</code> and <code>overlap</code> let you trade off runtime, memory use, and boundary stability.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb5"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">output_dir</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://fs.r-lib.org/reference/path.html" class="external-link">path</a></span><span class="op">(</span><span class="st">"results"</span>, <span class="fu"><a href="https://fs.r-lib.org/reference/path_file.html" class="external-link">path_file</a></span><span class="op">(</span><span class="fu"><a href="https://fs.r-lib.org/reference/path_file.html" class="external-link">path_ext_remove</a></span><span class="op">(</span><span class="va">wsi_path</span><span class="op">)</span><span class="op">)</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">predictions</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/predict_image.html">predict_image</a></span><span class="op">(</span></span>
 <span>  image_path <span class="op">=</span> <span class="va">wsi_path</span>,</span>
 <span>  model <span class="op">=</span> <span class="va">model</span>,</span>
-<span>  use_slicing <span class="op">=</span> <span class="cn">FALSE</span>,</span>
-<span>  slice_size <span class="op">=</span> <span class="fl">1024</span>,  <span class="co"># pixels per tile; shrink for tighter memory budgets</span></span>
-<span>  overlap <span class="op">=</span> <span class="fl">0.2</span>,     <span class="co"># tile overlap to smooth boundaries</span></span>
+<span>  use_slicing <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  slice_size <span class="op">=</span> <span class="fl">1024</span>,</span>
+<span>  overlap <span class="op">=</span> <span class="fl">0.2</span>,</span>
 <span>  output_dir <span class="op">=</span> <span class="va">output_dir</span>,</span>
 <span>  save_visualizations <span class="op">=</span> <span class="cn">TRUE</span></span>
 <span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">predictions</span></span></code></pre></div>
 </div>
-<p>The tibble contains one row per detected grain, complete with geometric measurements and morphology descriptors ready for downstream analysis.</p>
-</section><section class="level2"><h2 id="visualise-the-overlay-and-exports">Visualise the Overlay and Exports<a class="anchor" aria-label="anchor" href="#visualise-the-overlay-and-exports"></a>
+<p>The returned tibble contains one row per detected object, including class labels, confidence scores, bounding-box-derived geometry, and summary fields added by <code>enhance_results()</code>.</p>
+</section><section class="level2"><h2 id="review-the-overlay">Review the Overlay<a class="anchor" aria-label="anchor" href="#review-the-overlay"></a>
 </h2>
-<p>SAHI writes annotated overlays alongside the raw detections. Locate the generated assets and preview them in-line.</p>
 <div class="cell">
-<div class="sourceCode cell-code" id="cb5"><pre class="downlit sourceCode r">
+<div class="sourceCode cell-code" id="cb6"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="fu"><a href="https://fs.r-lib.org/reference/dir_ls.html" class="external-link">dir_ls</a></span><span class="op">(</span><span class="va">output_dir</span><span class="op">)</span></span>
 <span></span>
 <span><span class="va">viz_path</span> <span class="op">&lt;-</span> <span class="fu"><a href="https://fs.r-lib.org/reference/dir_ls.html" class="external-link">dir_ls</a></span><span class="op">(</span><span class="va">output_dir</span>, glob <span class="op">=</span> <span class="st">"*_prediction.png"</span>, fail <span class="op">=</span> <span class="cn">FALSE</span><span class="op">)</span></span>
 <span><span class="kw">if</span> <span class="op">(</span><span class="fu"><a href="https://rdrr.io/r/base/length.html" class="external-link">length</a></span><span class="op">(</span><span class="va">viz_path</span><span class="op">)</span><span class="op">)</span> <span class="op">{</span></span>
-<span>  <span class="fu">image_read</span><span class="op">(</span><span class="va">viz_path</span><span class="op">[[</span><span class="fl">1</span><span class="op">]</span><span class="op">]</span><span class="op">)</span></span>
+<span>  <span class="fu">knitr</span><span class="fu">::</span><span class="fu"><a href="https://rdrr.io/pkg/knitr/man/include_graphics.html" class="external-link">include_graphics</a></span><span class="op">(</span><span class="va">viz_path</span><span class="op">[[</span><span class="fl">1</span><span class="op">]</span><span class="op">]</span><span class="op">)</span></span>
 <span><span class="op">}</span></span></code></pre></div>
 </div>
-<p>You can also hand the exported visual to image viewers or documentation pipelines — each file is saved with the original slide name plus <code>_prediction.png</code>.</p>
-</section><section class="level2"><h2 id="summarise-detection-statistics">Summarise Detection Statistics<a class="anchor" aria-label="anchor" href="#summarise-detection-statistics"></a>
+</section><section class="level2"><h2 id="summarize-detections">Summarize Detections<a class="anchor" aria-label="anchor" href="#summarize-detections"></a>
 </h2>
-<p>With the predictions tibble in hand, compute per-image summaries or overall population metrics to quantify mineralogy at scale.</p>
 <div class="cell">
-<div class="sourceCode cell-code" id="cb6"><pre class="downlit sourceCode r">
+<div class="sourceCode cell-code" id="cb7"><pre class="downlit sourceCode r">
 <code class="sourceCode R"><span><span class="va">per_image</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/summarize_by_image.html">summarize_by_image</a></span><span class="op">(</span><span class="va">predictions</span><span class="op">)</span></span>
 <span><span class="va">per_image</span></span>
 <span></span>
 <span><span class="va">population</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/get_population_stats.html">get_population_stats</a></span><span class="op">(</span><span class="va">predictions</span><span class="op">)</span></span>
 <span><span class="va">population</span></span></code></pre></div>
 </div>
-<p>These summaries surface object counts, size distributions, and shape metrics that support QA checks or comparisons between slides.</p>
+<p>These summaries are useful for:</p>
+<ul>
+<li>slide-level QA</li>
+<li>comparing slides or treatment groups</li>
+<li>spotting large shifts in count or size distributions</li>
+</ul></section><section class="level2"><h2 id="batch-process-a-directory">Batch Process a Directory<a class="anchor" aria-label="anchor" href="#batch-process-a-directory"></a>
+</h2>
+<p>Once you are happy with the settings on one image, scale out to a directory.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="downlit sourceCode r">
+<code class="sourceCode R"><span><span class="va">batch_results</span> <span class="op">&lt;-</span> <span class="fu"><a href="../reference/predict_images.html">predict_images</a></span><span class="op">(</span></span>
+<span>  input_dir <span class="op">=</span> <span class="st">"path/to/whole_slide_directory"</span>,</span>
+<span>  model <span class="op">=</span> <span class="va">model</span>,</span>
+<span>  use_slicing <span class="op">=</span> <span class="cn">TRUE</span>,</span>
+<span>  slice_size <span class="op">=</span> <span class="fl">1024</span>,</span>
+<span>  overlap <span class="op">=</span> <span class="fl">0.2</span>,</span>
+<span>  output_dir <span class="op">=</span> <span class="st">"results/batch_whole_slides"</span>,</span>
+<span>  save_visualizations <span class="op">=</span> <span class="cn">TRUE</span></span>
+<span><span class="op">)</span></span>
+<span></span>
+<span><span class="va">batch_results</span></span></code></pre></div>
+</div>
 </section><section class="level2"><h2 id="next-steps">Next Steps<a class="anchor" aria-label="anchor" href="#next-steps"></a>
 </h2>
 <ul>
-<li>Adjust <code>slice_size</code> and <code>overlap</code> to balance runtime and fidelity for extremely large slides.</li>
-<li>Pipe <code>predictions</code> into custom tidyverse workflows for further filtering, plotting, or reporting.</li>
-<li>Use <code><a href="../reference/predict_images.html">predict_images()</a></code> to batch-process entire slide directories once you are satisfied with the single-slide results.</li>
+<li>adjust <code>slice_size</code> and <code>overlap</code> to match your image scale and memory budget</li>
+<li>filter <code>predictions</code> with tidyverse tools for class-specific summaries</li>
+<li>use <code><a href="../reference/summarize_by_image.html">summarize_by_image()</a></code> and <code><a href="../reference/get_population_stats.html">get_population_stats()</a></code> for reporting</li>
+<li>for segmentation-oriented workflows, use the training and prediction templates/notebooks rather than this detection-first vignette</li>
 </ul></section><script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
       var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
@@ -241,7 +277,7 @@
 </div>
 
 <div class="pkgdown-footer-right">
-  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.1.3.</p>
+  <p>Site built with <a href="https://pkgdown.r-lib.org/" class="external-link">pkgdown</a> 2.2.0.</p>
 </div>
 
     </footer>
