@@ -101,6 +101,15 @@ from_pretrained <- function(model_id,
   category_mapping <- .manifest_category_name_map(manifest)
   if (!is.null(category_mapping)) {
     cli::cli_alert_info("Loaded {length(category_mapping)} class names from manifest")
+    # SAHI expects category_mapping with integer keys: {0: "Clam", 1: "Mussel"}
+    # R named lists always have string names, so reticulate converts them to
+    # Python dicts with string keys {"0": "Clam"}, which SAHI silently ignores.
+    # Build a proper Python dict with integer keys.
+    category_mapping <- reticulate::py_dict(
+      keys = as.integer(names(category_mapping)),
+      values = unname(unlist(category_mapping)),
+      convert = FALSE
+    )
   }
 
   training_summary_path <- .find_downloaded_artifact(files, manifest$artifacts$training_summary)

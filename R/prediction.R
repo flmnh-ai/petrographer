@@ -152,13 +152,21 @@ predict_image <- function(image_path, model, use_slicing = TRUE,
 # Internal: best-effort map of class_id -> class_name for a PetrographyModel.
 # Prefers the SAHI wrapper's category_mapping (populated from manifest.json)
 # and falls back to an empty dict so Python code treats class_ids as strings.
+# Always returns a Python dict with integer keys to match SAHI convention.
 .category_map <- function(model) {
   cm <- NULL
   if (!is.null(model$sahi_model)) {
     cm <- tryCatch(model$sahi_model$category_mapping, error = function(e) NULL)
   }
   if (is.null(cm)) {
-    cm <- .manifest_category_name_map(model$manifest)
+    r_map <- .manifest_category_name_map(model$manifest)
+    if (!is.null(r_map)) {
+      cm <- reticulate::py_dict(
+        keys = as.integer(names(r_map)),
+        values = unname(unlist(r_map)),
+        convert = FALSE
+      )
+    }
   }
   if (is.null(cm)) reticulate::dict() else cm
 }

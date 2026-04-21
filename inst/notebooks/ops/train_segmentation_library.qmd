@@ -7,7 +7,7 @@ params:
   dataset_id: "inclusions_shell"
   data_dir: "data/processed/inclusions_shell_sliced"
   dataset_description: "Segmentation training dataset"
-  model_id_prefix: "inclusions_shell"
+  model_id_prefix: "inclusions_shell_seg"
   variants: ["seg_nano", "seg_small", "seg_medium", "seg_large"]
   epochs: 120
   batch_size: 8
