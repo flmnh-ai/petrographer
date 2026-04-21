@@ -200,6 +200,7 @@ if (hub_available && nrow(pins_with_board) > 0) {
       ),
       details = function(index) {
         model <- models[index, ]
+        manifest <- model$full_manifest[[1]]
         # Handle NULL manifest from error handler
         if (is.null(manifest)) {
           return(htmltools::div(
