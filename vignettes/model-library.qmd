@@ -1,5 +1,9 @@
 ---
 title: "Model & Dataset Library"
+vignette: >
+  %\VignetteIndexEntry{Model & Dataset Library}
+  %\VignetteEngine{quarto::html}
+  %\VignetteEncoding{UTF-8}
 format:
   html:
     toc: true
@@ -7,6 +11,11 @@ format:
 execute:
   eval: true
 ---
+
+This page is the website-facing catalog for the petrographer model and dataset
+library. It is designed for browsing what is available, checking high-level
+training details, and copying the right `from_pretrained()` or `train_model()`
+calls into your own workflow.
 
 ```{r setup, message=FALSE, warning=FALSE, echo=FALSE}
 library(petrographer)
@@ -22,9 +31,10 @@ library(here)
 model_board <- board_url('https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/models/')
 dataset_board <- board_url('https://flmnh-ai.s3.us-east-1.amazonaws.com/.petrographer/datasets/')
 
-# Get pins from both boards
-model_pins <- pin_list(model_board)
-dataset_pins <- pin_list(dataset_board)
+# Get pins from both boards, but degrade gracefully if the hub is unavailable.
+model_pins <- tryCatch(pin_list(model_board), error = function(e) character(0))
+dataset_pins <- tryCatch(pin_list(dataset_board), error = function(e) character(0))
+hub_available <- length(model_pins) > 0 || length(dataset_pins) > 0
 
 # Create a list of pins with their board type (don't store board object in tibble)
 pins_with_board <- bind_rows(
@@ -37,7 +47,7 @@ pins_with_board <- bind_rows(
 
 ```{r models}
 #| echo: false
-if (nrow(pins_with_board) > 0) {
+if (hub_available && nrow(pins_with_board) > 0) {
   # Get metadata for all pins
   pins_data <- pmap_dfr(pins_with_board, function(name, board_type) {
     # Resolve board based on type
@@ -50,36 +60,28 @@ if (nrow(pins_with_board) > 0) {
     tryCatch({
       meta <- pins::pin_meta(board, name)
       manifest <- meta$user
+      catalog <- manifest$catalog_summary %||% manifest
+      final_metrics <- catalog$final_metrics %||% manifest$metrics$validation %||% list()
 
       tibble(
         id = name,
         type = board_type,
-        created = manifest$created %||% NA_character_,
+        created = catalog$created %||% manifest$created %||% NA_character_,
 
-        # Model-specific fields
-        backbone = manifest$backbone %||% NA_character_,
-        num_classes = manifest$num_classes %||% NA_integer_,
-        dataset_id = manifest$dataset_id %||% NA_character_,
-        freeze_at = manifest$freeze_at %||% NA_integer_,
-        max_iter = manifest$max_iter %||% NA_integer_,
-        ims_per_batch = manifest$ims_per_batch %||% NA_integer_,
-        learning_rate = manifest$learning_rate %||% NA_real_,
-        training_mins = manifest$training_duration_mins %||% NA_real_,
-        training_mode = manifest$training_mode %||% NA_character_,
+        # Model-specific fields (RF-DETR)
+        model_variant = catalog$model_variant %||% manifest$model_variant %||% NA_character_,
+        num_classes = catalog$num_classes %||% manifest$num_classes %||% NA_integer_,
+        dataset_id = catalog$dataset_id %||% manifest$dataset_id %||% NA_character_,
+        epochs = catalog$epochs %||% manifest$epochs %||% NA_integer_,
+        batch_size = catalog$batch_size %||% manifest$batch_size %||% NA_integer_,
+        grad_accum_steps = catalog$grad_accum_steps %||% manifest$grad_accum_steps %||% NA_integer_,
+        learning_rate = catalog$learning_rate %||% manifest$learning_rate %||% NA_real_,
+        training_mins = catalog$training_duration_mins %||% manifest$training_duration_mins %||% NA_real_,
+        training_mode = catalog$training_mode %||% manifest$training_mode %||% NA_character_,
 
-        # Performance metrics
-        segm_ap = if(!is.null(manifest$metrics$validation[["segm/ap"]])) {
-          round(manifest$metrics$validation[["segm/ap"]], 3)
-        } else NA_real_,
-        bbox_ap = if(!is.null(manifest$metrics$validation[["bbox/ap"]])) {
-          round(manifest$metrics$validation[["bbox/ap"]], 3)
-        } else NA_real_,
-        segm_ap50 = if(!is.null(manifest$metrics$validation[["segm/ap50"]])) {
-          round(manifest$metrics$validation[["segm/ap50"]], 3)
-        } else NA_real_,
-        segm_ap75 = if(!is.null(manifest$metrics$validation[["segm/ap75"]])) {
-          round(manifest$metrics$validation[["segm/ap75"]], 3)
-        } else NA_real_,
+        # Performance metrics for catalog display
+        map_50_95 = final_metrics$ap_50_95 %||% final_metrics$mAP_50_95 %||% final_metrics$map %||% final_metrics$ap %||% NA_real_,
+        map_50 = final_metrics$ap_50 %||% final_metrics$mAP_50 %||% final_metrics$ap50 %||% NA_real_,
 
         # Dataset-specific fields
         description = manifest$description %||% "",
@@ -94,19 +96,17 @@ if (nrow(pins_with_board) > 0) {
         id = name,
         type = board_type,
         created = NA_character_,
-        backbone = NA_character_,
+        model_variant = NA_character_,
         num_classes = NA_integer_,
         dataset_id = NA_character_,
-        freeze_at = NA_integer_,
-        max_iter = NA_integer_,
-        ims_per_batch = NA_integer_,
+        epochs = NA_integer_,
+        batch_size = NA_integer_,
+        grad_accum_steps = NA_integer_,
         learning_rate = NA_real_,
         training_mins = NA_real_,
         training_mode = NA_character_,
-        segm_ap = NA_real_,
-        bbox_ap = NA_real_,
-        segm_ap50 = NA_real_,
-        segm_ap75 = NA_real_,
+        map_50_95 = NA_real_,
+        map_50 = NA_real_,
         description = "",
         num_images = NA_integer_,
         full_manifest = list(NULL)
@@ -124,7 +124,7 @@ if (nrow(pins_with_board) > 0) {
       searchable = TRUE,
       filterable = TRUE,
       defaultPageSize = 10,
-      defaultSorted = "segm_ap",
+      defaultSorted = "map_50_95",
       defaultSortOrder = "desc",
       columns = list(
         id = colDef(
@@ -142,17 +142,16 @@ if (nrow(pins_with_board) > 0) {
         created = colDef(show = FALSE),
         description = colDef(show = FALSE),
         dataset_id = colDef(show = FALSE),
-        freeze_at = colDef(show = FALSE),
-        max_iter = colDef(show = FALSE),
-        ims_per_batch = colDef(show = FALSE),
+        epochs = colDef(show = FALSE),
+        batch_size = colDef(show = FALSE),
+        grad_accum_steps = colDef(show = FALSE),
         learning_rate = colDef(show = FALSE),
         training_mode = colDef(show = FALSE),
-        segm_ap50 = colDef(show = FALSE),
-        segm_ap75 = colDef(show = FALSE),
+        map_50 = colDef(show = FALSE),
         num_images = colDef(show = FALSE),
 
-        backbone = colDef(
-          name = "Backbone",
+        model_variant = colDef(
+          name = "Variant",
           minWidth = 100,
           cell = function(value) {
             if (is.na(value)) return("")
@@ -168,28 +167,17 @@ if (nrow(pins_with_board) > 0) {
             htmltools::span(style = "font-weight: 500; color: #666;", value)
           }
         ),
-        segm_ap = colDef(
-          name = "Segm AP",
+        map_50_95 = colDef(
+          name = "mAP 50:95",
           minWidth = 100,
           align = "right",
           cell = function(value) {
             if (is.na(value)) return("—")
-            color <- if (value >= 50) "#28a745" else if (value >= 30) "#ffc107" else "#dc3545"
+            pct <- value * 100
+            color <- if (pct >= 50) "#28a745" else if (pct >= 30) "#ffc107" else "#dc3545"
             htmltools::span(
               style = sprintf("font-weight: 700; font-size: 15px; color: %s;", color),
-              sprintf("%.1f%%", value)
-            )
-          }
-        ),
-        bbox_ap = colDef(
-          name = "BBox AP",
-          minWidth = 100,
-          align = "right",
-          cell = function(value) {
-            if (is.na(value)) return("—")
-            htmltools::span(
-              style = "font-weight: 500; color: #666;",
-              sprintf("%.1f%%", value)
+              sprintf("%.1f%%", pct)
             )
           }
         ),
@@ -212,8 +200,6 @@ if (nrow(pins_with_board) > 0) {
       ),
       details = function(index) {
         model <- models[index, ]
-        manifest <- model$full_manifest[[1]]
-
         # Handle NULL manifest from error handler
         if (is.null(manifest)) {
           return(htmltools::div(
@@ -224,6 +210,9 @@ if (nrow(pins_with_board) > 0) {
             )
           ))
         }
+
+        catalog <- manifest$catalog_summary %||% manifest
+        validation <- catalog$final_metrics %||% manifest$metrics$validation %||% list()
 
         htmltools::div(
           style = "padding: 20px; background: #f8f9fa;",
@@ -248,18 +237,18 @@ if (nrow(pins_with_board) > 0) {
           ),
 
           # Validation Metrics
-          if (!is.null(manifest$metrics$validation)) {
+          if (length(validation) > 0) {
             htmltools::div(
               style = "margin-bottom: 16px;",
               htmltools::h5(style = "margin: 0 0 10px 0; color: #333; font-size: 14px; font-weight: 600;", "📊 Validation Metrics"),
               htmltools::div(
                 style = "display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px;",
-                lapply(names(manifest$metrics$validation), function(metric) {
-                  value <- manifest$metrics$validation[[metric]]
-                  if (is.numeric(value) && !is.na(value) && metric != "iteration") {
+                lapply(names(validation), function(metric) {
+                  value <- validation[[metric]]
+                  if (is.numeric(value) && !is.na(value) && metric != "epoch") {
                     label <- gsub("/", " ", toupper(metric))
                     display_val <- if (grepl("ap", tolower(metric))) {
-                      sprintf("%.1f%%", value)
+                      sprintf("%.1f%%", value * 100)
                     } else {
                       sprintf("%.3f", value)
                     }
@@ -280,14 +269,19 @@ if (nrow(pins_with_board) > 0) {
             style = "margin-bottom: 16px;",
             htmltools::h5(style = "margin: 0 0 10px 0; color: #333; font-size: 14px; font-weight: 600;", "⚙️ Training Configuration"),
             htmltools::div(
-              style = "background: white; padding: 12px; border-radius: 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 16px; font-size: 13px;",
-              htmltools::div(htmltools::strong("Dataset: "), manifest$dataset_id %||% "—"),
-              htmltools::div(htmltools::strong("Backbone: "), manifest$backbone %||% "—"),
-              htmltools::div(htmltools::strong("Freeze At: "), manifest$freeze_at %||% "—"),
-              htmltools::div(htmltools::strong("Max Iterations: "), format(manifest$max_iter %||% 0, big.mark = ",")),
-              htmltools::div(htmltools::strong("Batch Size: "), manifest$ims_per_batch %||% "—"),
-              htmltools::div(htmltools::strong("Learning Rate: "), sprintf("%.2e", manifest$learning_rate %||% 0)),
-              htmltools::div(htmltools::strong("Training Mode: "), manifest$training_mode %||% "—"),
+            style = "background: white; padding: 12px; border-radius: 4px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px 16px; font-size: 13px;",
+              htmltools::div(htmltools::strong("Dataset: "), catalog$dataset_id %||% manifest$dataset_id %||% "—"),
+              htmltools::div(htmltools::strong("Task: "), catalog$task %||% "—"),
+              htmltools::div(htmltools::strong("Model Variant: "), catalog$model_variant %||% manifest$model_variant %||% "—"),
+              htmltools::div(htmltools::strong("Epochs: "), format(catalog$epochs %||% manifest$epochs %||% 0, big.mark = ",")),
+              htmltools::div(htmltools::strong("Batch Size: "), catalog$batch_size %||% manifest$batch_size %||% "—"),
+              htmltools::div(htmltools::strong("Grad Accum Steps: "), catalog$grad_accum_steps %||% manifest$grad_accum_steps %||% "—"),
+              htmltools::div(htmltools::strong("Learning Rate: "),
+                if (!is.null(catalog$learning_rate) && is.numeric(catalog$learning_rate))
+                  sprintf("%.2e", catalog$learning_rate) else if (!is.null(manifest$learning_rate) && is.numeric(manifest$learning_rate))
+                    sprintf("%.2e", manifest$learning_rate) else "—"
+              ),
+              htmltools::div(htmltools::strong("Training Mode: "), catalog$training_mode %||% manifest$training_mode %||% "—"),
               htmltools::div(htmltools::strong("Duration: "),
                 if (!is.na(model$training_mins)) {
                   mins <- round(model$training_mins)
@@ -301,15 +295,17 @@ if (nrow(pins_with_board) > 0) {
           htmltools::div(
             htmltools::h5(style = "margin: 0 0 10px 0; color: #333; font-size: 14px; font-weight: 600;", "ℹ️ Metadata"),
             htmltools::div(
-              style = "background: white; padding: 12px; border-radius: 4px; font-size: 13px;",
-              htmltools::div(htmltools::strong("Created: "),
-                if (!is.null(manifest$created) && !is.na(manifest$created)) {
-                  format(as.POSIXct(manifest$created), "%Y-%m-%d %H:%M")
+            style = "background: white; padding: 12px; border-radius: 4px; font-size: 13px;",
+            htmltools::div(htmltools::strong("Created: "),
+              if (!is.null(catalog$created) && !is.na(catalog$created)) {
+                format(as.POSIXct(catalog$created), "%Y-%m-%d %H:%M")
+              } else if (!is.null(manifest$created) && !is.na(manifest$created)) {
+                format(as.POSIXct(manifest$created), "%Y-%m-%d %H:%M")
                 } else {
                   "—"
                 }
               ),
-              htmltools::div(htmltools::strong("Version: "), manifest$version %||% manifest$run_id %||% "—")
+              htmltools::div(htmltools::strong("Run ID: "), catalog$run_id %||% manifest$run_id %||% manifest$version %||% "—")
             )
           )
         )
@@ -324,7 +320,7 @@ if (nrow(pins_with_board) > 0) {
 } else {
   htmltools::div(
     class = "alert alert-warning",
-    "Unable to connect to model hub. Check your internet connection."
+    "Unable to connect to the model hub right now. The page will show available content only when the hub listing endpoints respond."
   )
 }
 ```
@@ -357,19 +353,17 @@ if (nrow(pins_with_board) > 0 && exists("pins_data")) {
         ),
         type = colDef(show = FALSE),
         full_manifest = colDef(show = FALSE),
-        backbone = colDef(show = FALSE),
+        model_variant = colDef(show = FALSE),
         num_classes = colDef(show = FALSE),
         dataset_id = colDef(show = FALSE),
-        freeze_at = colDef(show = FALSE),
-        max_iter = colDef(show = FALSE),
-        ims_per_batch = colDef(show = FALSE),
+        epochs = colDef(show = FALSE),
+        batch_size = colDef(show = FALSE),
+        grad_accum_steps = colDef(show = FALSE),
         learning_rate = colDef(show = FALSE),
         training_mins = colDef(show = FALSE),
         training_mode = colDef(show = FALSE),
-        segm_ap = colDef(show = FALSE),
-        bbox_ap = colDef(show = FALSE),
-        segm_ap50 = colDef(show = FALSE),
-        segm_ap75 = colDef(show = FALSE),
+        map_50_95 = colDef(show = FALSE),
+        map_50 = colDef(show = FALSE),
 
         description = colDef(
           name = "Description",
@@ -420,14 +414,13 @@ if (nrow(pins_with_board) > 0 && exists("pins_data")) {
               style = "margin: 0; background: #f8f9fa; padding: 10px; border-radius: 4px; overflow-x: auto; position: relative;",
               htmltools::code(
                 style = "font-size: 13px; color: #333; font-family: 'Monaco', monospace;",
-                sprintf('train_model(\n  dataset_id = "%s",\n  num_classes = %s,\n  max_iter = 2000\n)',
-                  dataset$id,
-                  manifest$num_classes %||% "?"
+                sprintf('train_model(\n  dataset_id    = "%s",\n  model_id      = "%s_model",\n  model_variant = "small",\n  epochs        = 50,\n  batch_size    = 4\n)',
+                  dataset$id, dataset$id
                 )
               ),
               htmltools::tags$button(
-                onclick = sprintf("navigator.clipboard.writeText('train_model(dataset_id = \"%s\", num_classes = %s, max_iter = 2000)')",
-                  dataset$id, manifest$num_classes %||% "?"),
+                onclick = sprintf("navigator.clipboard.writeText('train_model(dataset_id = \"%s\", model_id = \"%s_model\", model_variant = \"small\", epochs = 50, batch_size = 4)')",
+                  dataset$id, dataset$id),
                 class = "btn btn-sm btn-outline-success",
                 style = "position: absolute; top: 6px; right: 6px; padding: 2px 8px; font-size: 11px;",
                 "Copy"
@@ -459,7 +452,7 @@ if (nrow(pins_with_board) > 0 && exists("pins_data")) {
 }
 ```
 
-## Usage
+## Loading a Model
 
 All models can be loaded with a single line:
 
@@ -473,25 +466,35 @@ model <- from_pretrained("model_id")
 results <- predict(model, "path/to/image.jpg")
 ```
 
-## Contributing
+## Publishing to the Library
 
-To publish your own trained models to this library:
+Maintainers can publish a finished local model pin to the shared library board
+with `pin_model()`. The exact destination board depends on the deployment
+environment, so the example below is intentionally generic:
 
 ```r
-# Configure your board
-board <- board_user()
+# Download the local pin so you can locate the model directory
+local_board <- pins::board_folder(here::here(".petrographer/models"), versioned = TRUE)
+files <- pins::pin_download(local_board, "my_model")
+model_dir <- fs::path_dir(files[[1]])
 
-# Publish a trained model
-publish_model(
-  model_dir = "Detectron2_Models/my_model",
-  model_id = "my_model",
-  board = board,
-  metadata = list(
-    description = "Brief description",
-    backbone = "resnet50",
-    num_classes = 5
+# Configure the destination board
+# board <- pins::board_url("https://example.com/petrographer/models/")
+# board <- pins::board_folder("~/shared/petrographer-models", versioned = TRUE)
+
+# Publish the local pin to that board
+pin_model(
+  model_dir = model_dir,
+  model_id  = "my_model",
+  board     = board,
+  metadata  = list(
+    description   = "Brief description",
+    model_variant = "small"
   )
 )
+
+# Refresh the destination board manifest for board_url() consumers
+pins::write_board_manifest(board)
 ```
 
 Contact the package maintainers to have your models added to the public hub.

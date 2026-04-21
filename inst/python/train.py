@@ -1,308 +1,254 @@
 #!/usr/bin/env python3
-import warnings
-import logging
+"""
+RF-DETR Training Script for Petrographer
+Uses RF-DETR's PyTorch Lightning training loop (rfdetr >= 1.6.0).
+"""
 
-# ---------------------------------------------------------------------
-# Silence noisy warnings/logs
-# ---------------------------------------------------------------------
-warnings.filterwarnings("ignore", category=UserWarning, module="pkg_resources")
-warnings.filterwarnings("ignore", message="torch.meshgrid: in an upcoming release")
-warnings.filterwarnings("ignore", message=".*GradScaler\\(.*\\) is deprecated.*")
-
-logging.getLogger("fvcore").setLevel(logging.ERROR)
-logging.getLogger("detectron2").setLevel(logging.ERROR)
-
-import os
 import argparse
-import torch
+import json
+import os
+from pathlib import Path
 
-from detectron2.utils.logger import setup_logger
-from detectron2.engine import DefaultTrainer, default_argument_parser, default_setup, launch
-from detectron2.config import get_cfg
-from detectron2 import model_zoo
-from detectron2.data import DatasetCatalog, MetadataCatalog, build_detection_train_loader
-from detectron2.data import DatasetMapper
-from detectron2.data import transforms as T
-from detectron2.data.datasets import register_coco_instances
-from detectron2.evaluation import COCOEvaluator
-from detectron2.engine.hooks import BestCheckpointer
-from detectron2.checkpoint import DetectionCheckpointer
+# Reduce CUDA memory fragmentation. PyTorch's default caching allocator
+# accumulates unusable holes across long training runs with variable tensor
+# sizes (aux losses + multi-scale training + occasional dense-GT tiles), which
+# has been responsible for the `generalized_box_iou` OOMs we keep seeing even
+# when nominal memory headroom should be enough. `expandable_segments` lets
+# freed memory compact and grow on demand, typically recovering 5-30% of
+# "reserved but unallocated" memory. Must be set BEFORE torch is imported —
+# `import rfdetr` below will pull in torch, so this block stays above it.
+# `setdefault` preserves any user override passed in from the environment.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
-# Throughput QoL
-try:
-    torch.backends.cudnn.benchmark = True
-except Exception:
-    pass
+import rfdetr
+from rfdetr.datasets.aug_config import AUG_AERIAL
 
+# Remove PyTorch DDP variables that SLURM sets automatically.
+# We handle GPU allocation via PTL's accelerator/devices args instead.
+for key in ['RANK', 'WORLD_SIZE', 'LOCAL_RANK',
+            'SLURM_PROCID', 'SLURM_LOCALID', 'SLURM_NTASKS']:
+    os.environ.pop(key, None)
 
-# ---------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------
-def setup_cfg(args):
-    from detectron2 import model_zoo
-    from detectron2.config import get_cfg
+# Variant -> class name mapping
+VARIANT_TO_CLASS = {
+    'nano': 'RFDETRNano', 'small': 'RFDETRSmall',
+    'medium': 'RFDETRMedium', 'large': 'RFDETRLarge',
+    'seg_preview': 'RFDETRSegPreview',
+    'seg_nano': 'RFDETRSegNano', 'seg_small': 'RFDETRSegSmall',
+    'seg_medium': 'RFDETRSegMedium', 'seg_large': 'RFDETRSegLarge',
+    'seg_xlarge': 'RFDETRSegXLarge', 'seg_2xlarge': 'RFDETRSeg2XLarge',
+}
 
-    cfg = get_cfg()
-
-    # Map backbone names to model zoo keys
-    backbone_map = {
-        "resnet50": "COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml",
-        "resnet101": "COCO-InstanceSegmentation/mask_rcnn_R_101_FPN_3x.yaml",
-        "resnext101": "COCO-InstanceSegmentation/mask_rcnn_X_101_32x8d_FPN_3x.yaml",
-    }
-
-    # Get backbone model zoo key
-    zoo_key = backbone_map.get(args.backbone.lower(), args.backbone)
-
-    # Load base config
-    cfg.merge_from_file(model_zoo.get_config_file(zoo_key))
-    cfg.MODEL.WEIGHTS = model_zoo.get_checkpoint_url(zoo_key)
-
-    # Basic settings
-    cfg.OUTPUT_DIR = args.output_dir
-    cfg.MODEL.DEVICE = args.device
-    cfg.SOLVER.AMP.ENABLED = (args.device == "cuda")
-
-    # Datasets
-    cfg.DATASETS.TRAIN = (args.dataset_name,)
-    cfg.DATASETS.TEST  = (args.val_dataset_name,)
-
-    # Dataloader
-    cfg.DATALOADER.NUM_WORKERS = args.num_workers
-
-    # Training schedule
-    cfg.SOLVER.IMS_PER_BATCH = args.ims_per_batch
-    cfg.SOLVER.MAX_ITER = args.max_iter
-    cfg.SOLVER.BASE_LR = args.learning_rate
-    cfg.SOLVER.CHECKPOINT_PERIOD = args.checkpoint_period if args.checkpoint_period > 0 else 999_999
-
-    # Evaluation period
-    cfg.TEST.EVAL_PERIOD = args.eval_period
-
-    # Tier 1 improvements: Better learning schedule
-    cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupCosineLR"
-    warmup_target = max(1, int(0.1 * args.max_iter))
-    cfg.SOLVER.WARMUP_ITERS = max(100, min(warmup_target, 1000))
-    cfg.SOLVER.WARMUP_FACTOR = 1.0 / 1000
-
-    # Backbone freezing (0=freeze nothing, 1=freeze stem, 2=freeze stem+res2, etc.)
-    cfg.MODEL.BACKBONE.FREEZE_AT = args.freeze_at
-
-    # Differential learning rates: backbone gets 0.1x, head gets 1.0x
-    # This is standard for fine-tuning pretrained models
-    cfg.SOLVER.BACKBONE_MULTIPLIER = 0.1
-
-    # Number of classes (only thing that must be set for your dataset)
-    cfg.MODEL.ROI_HEADS.NUM_CLASSES = args.num_classes
-
-    # Dense detection settings (for datasets with 100+ objects per image)
-    cfg.MODEL.RPN.POST_NMS_TOPK_TRAIN = 3000      # default: 2000
-    cfg.MODEL.RPN.POST_NMS_TOPK_TEST = 1500       # default: 1000
-    cfg.TEST.DETECTIONS_PER_IMAGE = 500           # default: 100
-
-    # Keep scale close to 1k px tiles
-    cfg.INPUT.MIN_SIZE_TRAIN = (928, 960, 1024)
-    cfg.INPUT.MAX_SIZE_TRAIN = 1024
-    cfg.INPUT.MIN_SIZE_TEST = 1024
-    cfg.INPUT.MAX_SIZE_TEST = 1024
-
-    # Optional overrides from command line
-    if args.opts:
-        cfg.merge_from_list(args.opts)
-
-    cfg.freeze()
-    return cfg
+# Max objects per variant (num_queries from rfdetr configs)
+VARIANT_MAX_OBJECTS = {
+    'nano': 300, 'small': 300, 'medium': 300, 'large': 300,
+    'seg_preview': 200,
+    'seg_nano': 100, 'seg_small': 100,
+    'seg_medium': 200, 'seg_large': 200,
+    'seg_xlarge': 300, 'seg_2xlarge': 300,
+}
 
 
+def main():
+    parser = argparse.ArgumentParser(description='Train RF-DETR model for petrography')
 
-# ---------------------------------------------------------------------
-# Augmentations
-# ---------------------------------------------------------------------
-def build_augmentations(cfg):
-    """Augmentations: flips + color jitter"""
-    return [
-        T.RandomFlip(prob=0.5, horizontal=True, vertical=False),
-        T.RandomFlip(prob=0.5, horizontal=False, vertical=True),
-        T.RandomRotation(angle=[0, 90, 180, 270], sample_style="choice", expand=False),
-        T.RandomBrightness(0.8, 1.2),  # ±20% brightness
-        T.RandomContrast(0.8, 1.2),    # ±20% contrast
-        T.RandomSaturation(0.8, 1.2),  # ±20% saturation
-        T.ResizeShortestEdge(
-            cfg.INPUT.MIN_SIZE_TRAIN, cfg.INPUT.MAX_SIZE_TRAIN, "choice"
-        ),
-    ]
-
-
-# ---------------------------------------------------------------------
-# Trainer
-# ---------------------------------------------------------------------
-class CocoTrainer(DefaultTrainer):
-    @classmethod
-    def build_train_loader(cls, cfg):
-        mapper = DatasetMapper(
-            cfg,
-            is_train=True,
-            augmentations=build_augmentations(cfg),
-            image_format="RGB",
-        )
-        return build_detection_train_loader(cfg, mapper=mapper)
-
-    @classmethod
-    def build_evaluator(cls, cfg, dataset_name, output_folder=None):
-        if output_folder is None:
-            output_folder = os.path.join(cfg.OUTPUT_DIR, "inference")
-        return COCOEvaluator(dataset_name, output_dir=output_folder)
-
-
-# ---------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------
-def main(args):
-    from detectron2.utils.logger import setup_logger
-    from detectron2.data import DatasetCatalog, MetadataCatalog
-    from detectron2.data.datasets import register_coco_instances
-    from detectron2.engine.hooks import BestCheckpointer
-    from detectron2.checkpoint import DetectionCheckpointer
-    import logging, os
-
-    setup_logger(name="detectron2")
-
-    # Derive val name if not provided
-    if not getattr(args, "val_dataset_name", None):
-        args.val_dataset_name = args.dataset_name.replace("_train", "_val")
-
-    # Clear any stale registrations (safe)
-    for name in [args.dataset_name, args.val_dataset_name]:
-        if name in DatasetCatalog.list():
-            DatasetCatalog.remove(name)
-
-    # Canonical registration (sets json_file/image_root; metadata gets hydrated on first load)
-    register_coco_instances(args.dataset_name,     {}, args.annotation_json,     args.image_root)
-    register_coco_instances(args.val_dataset_name, {}, args.val_annotation_json, args.val_image_root)
-
-    # --- Force-load datasets once so Detectron2 populates thing_classes/id mapping ---
-    try:
-        _ = DatasetCatalog.get(args.dataset_name)      # calls load_coco_json(..., dataset_name)
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to load TRAIN dataset '{args.dataset_name}'. "
-            f"Check --annotation-json/--image-root paths. Underlying error: {e}"
-        )
-    try:
-        _ = DatasetCatalog.get(args.val_dataset_name)  # calls load_coco_json(..., dataset_name)
-    except Exception as e:
-        raise RuntimeError(
-            f"Failed to load VAL dataset '{args.val_dataset_name}'. "
-            f"Check --val-annotation-json/--val-image-root paths. Underlying error: {e}"
-        )
-
-    # Now metadata is populated by Detectron2
-    tmeta = MetadataCatalog.get(args.dataset_name)
-    vmeta = MetadataCatalog.get(args.val_dataset_name)
-    tnames = list(getattr(tmeta, "thing_classes", []) or [])
-    vnames = list(getattr(vmeta, "thing_classes", []) or [])
-
-    logging.getLogger(__name__).info(f"TRAIN JSON: {getattr(tmeta, 'json_file', args.annotation_json)}")
-    logging.getLogger(__name__).info(f"VAL   JSON: {getattr(vmeta, 'json_file', args.val_annotation_json)}")
-    logging.getLogger(__name__).info(f"train thing_classes: {tnames}")
-    logging.getLogger(__name__).info(f"val   thing_classes: {vnames}")
-
-    if len(tnames) == 0:
-        raise RuntimeError(
-            "Dataset metadata has no 'thing_classes' after registration+load. "
-            "Ensure your TRAIN JSON has a valid 'categories' list with 'name' fields."
-        )
-    if len(vnames) == 0:
-        raise RuntimeError(
-            "Dataset metadata has no 'thing_classes' for VAL after registration+load. "
-            "Ensure your VAL JSON has a valid 'categories' list with 'name' fields."
-        )
-    if len(tnames) != len(vnames):
-        raise RuntimeError(
-            f"Class count mismatch: train={len(tnames)} vs val={len(vnames)}. "
-            "Train/Val JSONs must share identical 'categories'."
-        )
-
-    # Use metadata-derived class count; if you pass --num-classes >=0, you can override this.
-    if getattr(args, "num_classes", -1) is not None and args.num_classes >= 0:
-        args.num_classes = int(args.num_classes)
-    else:
-        args.num_classes = len(tnames)
-
-    logging.getLogger(__name__).info(f"Using NUM_CLASSES = {args.num_classes}")
-
-    # Build config AFTER dataset registration & class resolution
-    cfg = setup_cfg(args)
-    default_setup(cfg, args)
-
-    os.makedirs(cfg.OUTPUT_DIR, exist_ok=True)
-    with open(os.path.join(cfg.OUTPUT_DIR, "config.yaml"), "w") as f:
-        f.write(cfg.dump())
-
-    # Save metadata with class names for inference
-    import json
-    metadata_dict = {
-        "thing_classes": tnames,
-        "num_classes": args.num_classes,
-        "dataset_name": args.dataset_name,
-        "val_dataset_name": args.val_dataset_name
-    }
-    with open(os.path.join(cfg.OUTPUT_DIR, "metadata.json"), "w") as f:
-        json.dump(metadata_dict, f, indent=2)
-
-    trainer = CocoTrainer(cfg)
-
-    # Resume & keep best checkpoint by segm/AP (switch to "bbox/AP" if you prefer)
-    resume = os.path.exists(os.path.join(cfg.OUTPUT_DIR, "last_checkpoint"))
-    trainer.resume_or_load(resume=resume)
-
-    checkpointer = DetectionCheckpointer(trainer.model, save_dir=cfg.OUTPUT_DIR)
-    trainer.register_hooks([
-        BestCheckpointer(cfg.TEST.EVAL_PERIOD, checkpointer, val_metric="segm/AP", mode="max")
-    ])
-
-    trainer.train()
-
-
-
-
-
-# ---------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------
-if __name__ == "__main__":
-    parser = default_argument_parser()
-
-    # Data
-    parser.add_argument("--dataset-name", default="shell_train")
-    parser.add_argument("--val-dataset-name", default="")
-    parser.add_argument("--annotation-json", default="data/shell_mixed/train/_annotations.coco.json")
-    parser.add_argument("--image-root", default="data/shell_mixed/train")
-    parser.add_argument("--val-annotation-json", default="data/shell_mixed/val/_annotations.coco.json")
-    parser.add_argument("--val-image-root", default="data/shell_mixed/val")
-
-    # System / output
-    parser.add_argument("--output-dir", default="Detectron2_Models")
-    parser.add_argument("--device", default="cuda", choices=["cpu", "cuda", "mps"])
-    parser.add_argument("--num-workers", type=int, default=8)
-
-    # Solver / schedule (lean: LR is passed from caller, others are fixed in code)
-    parser.add_argument("--ims-per-batch", type=int, default=8)
-    parser.add_argument("--max-iter", type=int, default=12000)
-    parser.add_argument("--learning-rate", type=float, default=5e-4)  # pass batch-scaled LR from R
-    parser.add_argument("--eval-period", type=int, default=500)
-    parser.add_argument("--checkpoint-period", type=int, default=0)   # 0 => final only
+    # Dataset
+    parser.add_argument('--dataset-dir', type=str, required=True,
+                        help='Path to dataset directory (contains train/ and valid/ subdirs)')
+    parser.add_argument('--output-dir', type=str, required=True,
+                        help='Output directory for trained model')
 
     # Model
-    parser.add_argument("--num-classes", type=int, default=-1) # -1 => infer from dataset
-    parser.add_argument("--backbone", type=str, default="resnet50",
-                        help="Backbone: resnet50, resnet101, resnext101, or full model zoo key")
-    parser.add_argument("--freeze-at", type=int, default=2,
-                        help="Freeze backbone up to this stage (0=none, 1=stem, 2=stem+res2, default=1)")
+    parser.add_argument('--model-variant', type=str, default='nano',
+                        choices=list(VARIANT_TO_CLASS.keys()),
+                        help='RF-DETR model variant')
+    parser.add_argument('--resolution', type=int, default=None,
+                        help='Image resolution for training (auto-detected from variant if not specified)')
 
-    # Optional detectron2 overrides
-    parser.add_argument("--opts", nargs=argparse.REMAINDER)
+    # Training parameters
+    parser.add_argument('--epochs', type=int, default=100,
+                        help='Number of training epochs (default: 100)')
+    parser.add_argument('--batch-size', type=str, default='auto',
+                        help='Batch size (integer or "auto" for auto-detection)')
+    parser.add_argument('--grad-accum-steps', type=int, default=4,
+                        help='Gradient accumulation steps (default: 4)')
+    parser.add_argument('--learning-rate', type=float, default=None,
+                        help='Learning rate (uses model default if not specified)')
+
+    # Memory optimization
+    parser.add_argument('--device', type=str, default='cuda',
+                        choices=['cpu', 'cuda', 'mps'],
+                        help='Device for training')
+    parser.add_argument('--use-amp', action='store_true', default=False,
+                        help='Use automatic mixed precision training when supported')
+    parser.add_argument('--amp-dtype', type=str, default='bf16',
+                        choices=['bf16', 'fp16'],
+                        help='AMP dtype for mixed precision training')
+    parser.add_argument('--gradient-checkpointing', action='store_true', default=False,
+                        help='Enable gradient checkpointing (reduces memory usage)')
+
+    # System
+    parser.add_argument('--num-workers', type=int, default=8,
+                        help='Number of data loading workers (default: 8)')
+
+    # Validation, checkpointing & early stopping
+    # Fixed in rfdetr 1.6.1 (PR #848) — eval_interval > 1 now works
+    parser.add_argument('--eval-interval', type=int, default=None,
+                        help='Evaluate every N epochs (omit for rfdetr default: 1)')
+    parser.add_argument('--checkpoint-interval', type=int, default=None,
+                        help='Save checkpoint every N epochs (omit for rfdetr default: 10)')
+    parser.add_argument('--early-stopping-patience', type=int, default=None,
+                        help='Stop if val metric stalls for N evals (disabled if not set)')
+    parser.add_argument('--eval-max-dets', type=int, default=500,
+                        help='Max detections for COCO eval (default: 500)')
+
+    # Performance tuning
+    parser.add_argument('--fp16-eval', action='store_true', default=True,
+                        help='Run validation in half precision (default: True)')
+    parser.add_argument('--no-fp16-eval', action='store_false', dest='fp16_eval',
+                        help='Disable half-precision validation')
+    parser.add_argument('--pin-memory', action='store_true', default=True,
+                        help='Pin memory for faster CPU->GPU transfer (default: True)')
+    parser.add_argument('--persistent-workers', action='store_true', default=True,
+                        help='Keep dataloader workers alive between epochs (default: True)')
+    parser.add_argument('--prefetch-factor', type=int, default=4,
+                        help='Number of batches each worker pre-loads (default: 4)')
 
     args = parser.parse_args()
 
-    launch(main, args.num_gpus, num_machines=1, machine_rank=0, dist_url="auto", args=(args,))
+    # Parse batch size (integer or "auto")
+    if args.batch_size == 'auto':
+        batch_size = 'auto'
+    else:
+        batch_size = int(args.batch_size)
+
+    # Extract class names from COCO annotations
+    train_anno = Path(args.dataset_dir) / 'train' / '_annotations.coco.json'
+    with open(train_anno, 'r') as f:
+        anno = json.load(f)
+
+    categories = sorted(anno['categories'], key=lambda x: x['id'])
+    class_names = [cat['name'] for cat in categories]
+    category_ids = [int(cat['id']) for cat in categories]
+    num_classes = len(class_names)
+
+    print(f"Dataset: {args.dataset_dir}")
+    print(f"Classes ({num_classes}): {class_names}")
+    print(f"Model: {args.model_variant} (max {VARIANT_MAX_OBJECTS.get(args.model_variant, '?')} objects/image)")
+    print(f"Device: {args.device}")
+    print(f"Eval every {args.eval_interval} epochs, checkpoint every {args.checkpoint_interval} epochs")
+
+    # Initialize model — don't pass num_classes, let training handle it
+    model_class_name = VARIANT_TO_CLASS[args.model_variant]
+    model_class = getattr(rfdetr, model_class_name)
+    model_kwargs = {}
+
+    if args.resolution is not None:
+        model_kwargs['resolution'] = args.resolution
+
+    if args.gradient_checkpointing:
+        model_kwargs['gradient_checkpointing'] = True
+
+    model = model_class(**model_kwargs)
+
+    # Build train() kwargs — PTL-compatible (rfdetr >= 1.6.0)
+    # Explicitly set single-GPU training to avoid SLURM/DDP auto-detection
+    accelerator = {
+        'cuda': 'gpu',
+        'cpu': 'cpu',
+        'mps': 'mps',
+    }[args.device]
+
+    train_kwargs = {
+        'dataset_dir': args.dataset_dir,
+        'output_dir': args.output_dir,
+        'epochs': args.epochs,
+        'batch_size': batch_size,
+        'grad_accum_steps': args.grad_accum_steps,
+        'num_workers': args.num_workers,
+        'eval_max_dets': args.eval_max_dets,
+        'log_per_class_metrics': True,
+        'accelerator': accelerator,
+        'devices': 1,
+        'strategy': 'auto',
+        # Performance tuning
+        'fp16_eval': bool(args.fp16_eval and args.device == 'cuda' and args.use_amp),
+        'pin_memory': args.pin_memory,
+        'persistent_workers': args.persistent_workers,
+        'prefetch_factor': args.prefetch_factor,
+        # Augmentation: AUG_AERIAL gives full D4 symmetry (horizontal + vertical
+        # flip + 90° rotation) which matches thin-section / petrography data —
+        # rotationally symmetric, no preferred orientation. Plus mild brightness
+        # / contrast for the mixed photomicrograph + slide-scanner sources.
+        # The naming is for aerial imagery but the math is identical.
+        # rfdetr's default is just HorizontalFlip(p=0.5), which leaves symmetries
+        # on the table for this domain.
+        'aug_config': AUG_AERIAL,
+    }
+
+    if args.use_amp:
+        if args.device == 'cuda':
+            train_kwargs['precision'] = 'bf16-mixed' if args.amp_dtype == 'bf16' else '16-mixed'
+        else:
+            print(f"AMP requested on {args.device}; ignoring because mixed precision is only enabled for CUDA here.")
+
+    # Only pass if explicitly set (otherwise use rfdetr defaults)
+    if args.eval_interval is not None:
+        train_kwargs['eval_interval'] = args.eval_interval
+    if args.checkpoint_interval is not None:
+        train_kwargs['checkpoint_interval'] = args.checkpoint_interval
+    if args.learning_rate is not None:
+        train_kwargs['lr'] = args.learning_rate
+
+    # Early stopping
+    if args.early_stopping_patience is not None:
+        train_kwargs['early_stopping'] = True
+        train_kwargs['early_stopping_patience'] = args.early_stopping_patience
+
+    # Train
+    print(f"\nStarting training: {args.epochs} epochs, batch_size={batch_size}")
+    model.train(**train_kwargs)
+
+    # Save metadata used by R to assemble the versioned petrographer manifest.
+    # The package intentionally keeps this intermediate file simple and lets R
+    # own the stable public schema (`manifest.json` / `training_summary.json`).
+    # NOTE: RF-DETR predictions currently surface model-local class indices
+    # (0..N-1), not the original COCO category ids. Persist both the display
+    # names and the original COCO ids here so R can reconstruct overlays and
+    # COCO evaluation targets correctly. If RF-DETR or SAHI changes class-id
+    # semantics in a future release, re-verify the mapping in
+    # from_pretrained() / evaluate_model_sahi() against a dataset with
+    # non-consecutive COCO category ids.
+    metadata = {
+        'thing_classes': class_names,
+        'category_ids': category_ids,
+        'model_category_names': {
+            str(i): name for i, name in enumerate(class_names)
+        },
+        'model_to_coco_category_id': {
+            str(i): cid for i, cid in enumerate(category_ids)
+        },
+        'categories': [
+            {'model_id': i, 'coco_id': cid, 'name': name}
+            for i, (cid, name) in enumerate(zip(category_ids, class_names))
+        ],
+        'num_classes': num_classes,
+        'model_variant': args.model_variant,
+        'backend': 'rfdetr',
+        'rfdetr_version': getattr(rfdetr, '__version__', None),
+        'is_segmentation': args.model_variant.startswith('seg'),
+        'max_objects': VARIANT_MAX_OBJECTS.get(args.model_variant, 300),
+    }
+
+    if args.resolution is not None:
+        metadata['training_resolution'] = args.resolution
+
+    metadata_path = Path(args.output_dir) / 'metadata.json'
+    with open(metadata_path, 'w') as f:
+        json.dump(metadata, f, indent=2)
+
+    print(f"\nMetadata saved to {metadata_path}")
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,180 @@
+---
+title: "Petrographer Model Zoo with pins"
+author: "petrographer team"
+format:
+  html:
+    code-fold: true
+    toc: true
+editor: visual
+---
+
+> **Reference notebook, not supported user docs**
+>
+> This notebook is kept as maintainer-facing reference for board management and
+> publishing workflows. It is useful for mining patterns and commands, but it is
+> not treated as a polished public tutorial.
+
+```{r}
+#| label: setup
+#| message: false
+#| warning: false
+library(petrographer)
+library(here)
+if (requireNamespace("pins", quietly = TRUE)) {
+  library(pins)
+}
+```
+
+## Overview
+
+This notebook is about board maintenance:
+
+- inspecting local model pins
+- publishing local model pins to another board
+- checking versions and metadata
+- deleting or replacing pins when needed
+
+The stable model bundle now centers on:
+
+- `checkpoint_best_total.pth`
+- `manifest.json`
+- `training_summary.json`
+
+Older pins may also include `metadata.json`, `metrics.csv`, `hparams.yaml`,
+`log.txt`, or `results.json`.
+
+## Configure Boards
+
+```{r}
+# Local board used by petrographer training
+board_local <- pins::board_folder(here(".petrographer/models"), versioned = TRUE)
+board_local
+```
+
+```{r}
+# Example shared folder board
+# board_shared <- pins::board_folder("~/Dropbox/petrographer-models", versioned = TRUE)
+```
+
+```{r}
+# Example S3 board
+# board_s3 <- pins::board_s3(bucket = Sys.getenv("PETRO_S3_BUCKET"), prefix = "petrographer", versioned = TRUE)
+```
+
+## Inspect Local Models
+
+```{r}
+available <- if (requireNamespace("pins", quietly = TRUE)) pins::pin_list(board_local) else character()
+available
+```
+
+```{r}
+if (length(available)) {
+  model_info(available[[1]], board = board_local)
+}
+```
+
+```{r}
+if (length(available)) {
+  info <- pins::pin_meta(board_local, available[[1]])
+  str(info$user, max.level = 2)
+}
+```
+
+## Locate the Files Behind a Pin
+
+Use `pin_download()` when you need the actual model directory for publishing or
+inspection.
+
+```{r}
+if (length(available)) {
+  files <- pins::pin_download(board_local, available[[1]])
+  basename(files)
+}
+```
+
+```{r}
+if (exists("files")) {
+  model_dir <- fs::path_dir(files[[1]])
+  model_dir
+}
+```
+
+## Publish a Local Pin to Another Board
+
+`train_model()` already pins successful runs to the local board. Maintainers
+only need `pin_model()` when copying a finished local pin to another board.
+
+```{r}
+if (FALSE && exists("model_dir")) {
+  pin_model(
+    model_dir = model_dir,
+    model_id = available[[1]],
+    board = board_shared,
+    metadata = list(
+      notes = "Published from model_zoo_pins.qmd",
+      owner = Sys.info()[["user"]]
+    )
+  )
+}
+```
+
+If the destination board is consumed through `board_url()`, refresh the board
+manifest after publishing:
+
+```{r}
+if (FALSE) {
+  pins::write_board_manifest(board_shared)
+}
+```
+
+## Versions and Search
+
+```{r}
+if (length(available)) {
+  pins::pin_versions(board_local, available[[1]])
+}
+```
+
+```{r}
+if (requireNamespace("pins", quietly = TRUE)) {
+  res <- pins::pin_search(board_local, "shell")
+  if (!is.null(res) && "name" %in% names(res)) unique(res$name) else character()
+}
+```
+
+## Load a Model for a Quick Sanity Check
+
+```{r}
+if (length(available)) {
+  mdl <- from_pretrained(available[[1]], board = "local", confidence = 0.5, device = "cpu")
+  mdl
+}
+```
+
+```{r}
+# Example prediction (adjust the path to an existing image)
+# if (exists("mdl") && file.exists("data/raw/sample.jpg")) {
+#   res <- predict_image("data/raw/sample.jpg", mdl, use_slicing = TRUE)
+#   head(res)
+# }
+```
+
+## Housekeeping
+
+Delete a pin only when you are sure you no longer need it on that board.
+
+```{r}
+if (FALSE && length(available) > 0) {
+  pins::pin_delete(board_local, available[[1]])
+}
+```
+
+## What to Reuse Later
+
+This notebook is mainly worth keeping for:
+
+- local/shared board configuration snippets
+- publishing flow with `pin_model()`
+- `pin_download()` plus `model_dir` extraction
+- quick inspection of board metadata and versions

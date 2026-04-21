@@ -11,6 +11,9 @@
 ^\.github(/|$)
 
 ^vignettes/.+_files(/|$)
+^vignettes/README\.md$
+^vignettes/archive(/|$)
+^vignettes/model-library\.qmd$
 
 ^archived(/|$)
 ^data(/|$)
@@ -23,3 +26,23 @@
 ^CLAUDE\.md$
 ^\.petrographer(/|$)
 ^petrographer-pins(/|$)
+
+# Rendered/generated artifacts under vignettes and inst
+^vignettes/\.quarto(/|$)
+^vignettes/results(/|$)
+^inst/notebooks/results(/|$)
+^inst/notebooks/annotated_result\.jpg$
+^inst/notebooks/.+\.pth$
+
+# Python bytecode and model weights anywhere in the tree
+(^|/)__pycache__(/|$)
+\.pyc$
+
+# Stray top-level scripts (not part of the package)
+^align_images\.py$
+^align_module\.py$
+^matchanything_stepbystep\.R$
+
+# Misc
+^\.Rhistory$
+^\.DS_Store$

@@ -24,7 +24,7 @@ pg_plot_dataset_image(
 \item{...}{Additional arguments passed to \code{\link[=pg_plot_annotations]{pg_plot_annotations()}}.}
 }
 \value{
-A \code{magick-image} with annotations drawn.
+The path to the written PNG, invisibly.
 }
 \description{
 Plot a sample image from a dataset directory

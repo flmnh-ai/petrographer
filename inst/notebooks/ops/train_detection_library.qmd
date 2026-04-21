@@ -1,0 +1,520 @@
+---
+title: "Train Detection Library Models"
+format:
+  html:
+    toc: true
+params:
+  dataset_id: "inclusions_shell"
+  data_dir: "data/processed/inclusions_shell"
+  dataset_description: "Detection training dataset on mixed shell and inclusion"
+  model_id_prefix: "inclusions_shell"
+  variants: ["nano", "small", "medium", "large"]
+  epochs: 120
+  batch_size: 8
+  time_hours: 3
+  validate_every: 2
+  early_stopping_patience: null
+  confidence: 0.5
+  device: "mps"
+  slice_size: 1024
+  overlap: 0.2
+  max_dets: 300
+  test_image_index: 1
+  hpc_host: "hpg"
+  hpc_base_dir: "/blue/nicolas.gauthier/nicolas.gauthier/petrographer"
+  publish_to_hub: false
+  hub_board_url: null
+---
+
+Operational notebook for training multiple **detection** variants for the model
+library with one shared configuration.
+
+This notebook:
+
+- trains each variant in sequence
+- continues past failures and records them
+- runs a local load/predict check for successful runs
+- computes SAHI validation metrics for successful runs
+- optionally republishes successful runs to a shared hub board
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(fs)
+library(here)
+library(pins)
+library(petrographer)
+library(hipergator)
+
+variants <- unlist(params$variants)
+stopifnot(length(variants) > 0)
+stopifnot(all(variants %in% c("nano", "small", "medium", "large")))
+
+hpg_configure(
+  host = params$hpc_host,
+  base_dir = params$hpc_base_dir
+)
+
+data_dir <- here(params$data_dir)
+out_dir <- here("results", "ops_detection_library")
+dir_create(out_dir)
+
+pin_dataset(
+  data_dir = data_dir,
+  dataset_id = params$dataset_id,
+  metadata = list(
+    description = params$dataset_description
+  )
+)
+
+dataset_board <- petrographer:::.get_dataset_board()
+dataset_path <- get_dataset_path(params$dataset_id, board = "local")
+dataset_meta <- pins::pin_meta(dataset_board, params$dataset_id)
+
+valid_images <- dir_ls(path(data_dir, "valid"), glob = "*.jpg")
+if (!length(valid_images)) {
+  valid_images <- dir_ls(path(data_dir, "valid"), glob = "*.png")
+}
+stopifnot(length(valid_images) > 0)
+
+test_image <- valid_images[[params$test_image_index]]
+
+hub_board <- if (isTRUE(params$publish_to_hub)) {
+  stopifnot(!is.null(params$hub_board_url), nzchar(params$hub_board_url))
+  board_url(params$hub_board_url)
+} else {
+  NULL
+}
+```
+
+## Submit Variants
+
+```{r submit-library}
+handles <- vector("list", length(variants))
+
+for (i in seq_along(variants)) {
+  variant <- variants[[i]]
+  model_id <- paste(params$model_id_prefix, variant, sep = "_")
+
+  config <- petrographer:::prepare_training_config(
+    data_dir = dataset_path,
+    dataset_id = params$dataset_id,
+    dataset_version = dataset_meta$version,
+    model_id = model_id,
+    model_variant = variant,
+    resolution = NULL,
+    epochs = params$epochs,
+    grad_accum_steps = NA,
+    learning_rate = NULL,
+    device = "cuda",
+    batch_size = params$batch_size,
+    use_amp = TRUE,
+    amp_dtype = "bf16",
+    gradient_checkpointing = FALSE,
+    num_workers = NULL,
+    time_hours = params$time_hours,
+    validate_every = params$validate_every,
+    early_stopping_patience = params$early_stopping_patience
+  )
+
+  handles[[i]] <- tryCatch(
+    petrographer:::submit_hpc_training(config),
+    error = function(e) list(
+      config = config,
+      submit_error = conditionMessage(e),
+      submitted_at = Sys.time()
+    )
+  )
+}
+```
+
+## Wait, Collect, and Validate
+
+```{r train-library}
+run_records <- vector("list", length(variants))
+
+for (i in seq_along(variants)) {
+  variant <- variants[[i]]
+  handle <- handles[[i]]
+  model_id <- handle$config$model_id
+
+  if (!is.null(handle$submit_error)) {
+    run_records[[i]] <- tibble::tibble(
+      variant = variant,
+      model_id = model_id,
+      status = "failed",
+      detections = NA_integer_,
+      mean_confidence = NA_real_,
+      ap = NA_real_,
+      ap50 = NA_real_,
+      ar = NA_real_,
+      published = FALSE,
+      error = handle$submit_error
+    )
+    next
+  }
+
+  run_records[[i]] <- tryCatch({
+    handle <- petrographer:::wait_hpc_training(handle)
+    model_dir <- petrographer:::collect_hpc_training(handle)
+
+    completed_at <- if (!is.null(handle$completed_at)) handle$completed_at else Sys.time()
+    duration_mins <- round(
+      as.numeric(difftime(completed_at, handle$submitted_at, units = "mins")),
+      1
+    )
+
+    trained_model_id <- petrographer:::finalize_trained_model(
+      model_dir = model_dir,
+      config = handle$config,
+      duration_mins = duration_mins
+    )
+
+    model <- from_pretrained(
+      trained_model_id,
+      board = "local",
+      device = params$device,
+      confidence = params$confidence
+    )
+
+    sanity_result <- predict_image(
+      image_path = test_image,
+      model = model,
+      use_slicing = TRUE,
+      slice_size = params$slice_size,
+      overlap = params$overlap,
+      output_dir = path(out_dir, trained_model_id)
+    )
+
+    training_eval <- evaluate_training(
+      model_id = trained_model_id,
+      output_dir = path(out_dir, trained_model_id, "training_eval")
+    )
+
+    sahi_eval <- evaluate_model_sahi(
+      model = model,
+      annotation_json = path(data_dir, "valid/_annotations.coco.json"),
+      image_dir = path(data_dir, "valid"),
+      use_slicing = TRUE,
+      slice_size = params$slice_size,
+      overlap = params$overlap,
+      max_dets = params$max_dets,
+      save_predictions = path(out_dir, trained_model_id, "sahi_predictions.json")
+    )
+
+    # Per-class SAHI metrics: write per variant so the post-loop chunk can read
+    # them back without holding all sahi_eval objects in memory.
+    if (!is.null(sahi_eval$per_class) && nrow(sahi_eval$per_class) > 0) {
+      readr::write_csv(
+        sahi_eval$per_class,
+        path(out_dir, trained_model_id, "per_class_metrics.csv")
+      )
+    }
+
+    # Confusion matrix at IoU >= 0.5. Greedy matching; see ?confusion_matrix.
+    cm <- confusion_matrix(
+      predictions = sahi_eval$predictions,
+      annotation_json = path(data_dir, "valid/_annotations.coco.json"),
+      iou_threshold = 0.5,
+      score_threshold = params$confidence
+    )
+    readr::write_csv(
+      cm$long,
+      path(out_dir, trained_model_id, "confusion_matrix.csv")
+    )
+
+    published <- FALSE
+    if (isTRUE(params$publish_to_hub)) {
+      local_board <- pins::board_folder(here(".petrographer/models"), versioned = TRUE)
+      model_files <- pins::pin_download(local_board, trained_model_id)
+      model_dir <- fs::path_dir(model_files[[1]])
+      pin_model(
+        model_dir = model_dir,
+        model_id = trained_model_id,
+        board = hub_board,
+        metadata = list(notes = "Published from train_detection_library.qmd")
+      )
+      published <- TRUE
+    }
+
+    summary_lookup <- stats::setNames(sahi_eval$summary$value, sahi_eval$summary$metric)
+
+    tibble::tibble(
+      variant = variant,
+      model_id = trained_model_id,
+      status = "success",
+      detections = nrow(sanity_result),
+      mean_confidence = if (nrow(sanity_result) > 0) mean(sanity_result$confidence) else NA_real_,
+      ap = unname(summary_lookup["AP"]),
+      ap50 = unname(summary_lookup["AP50"]),
+      ar = unname(summary_lookup[paste0("AR@", params$max_dets)]),
+      published = published,
+      error = NA_character_
+    )
+  }, error = function(e) {
+    tibble::tibble(
+      variant = variant,
+      model_id = model_id,
+      status = "failed",
+      detections = NA_integer_,
+      mean_confidence = NA_real_,
+      ap = NA_real_,
+      ap50 = NA_real_,
+      ar = NA_real_,
+      published = FALSE,
+      error = conditionMessage(e)
+    )
+  })
+}
+
+library_runs <- bind_rows(run_records)
+readr::write_csv(library_runs, path(out_dir, "detection_library_runs.csv"))
+library_runs
+```
+
+## Compare Successful Variants
+
+```{r compare}
+library_runs |>
+  filter(status == "success") |>
+  arrange(desc(ap))
+```
+
+```{r compare-plot, eval=sum(library_runs$status == "success") > 0}
+library_runs |>
+  filter(status == "success") |>
+  mutate(variant = factor(variant, levels = variants)) |>
+  pivot_longer(c(ap, ap50, ar), names_to = "metric", values_to = "value") |>
+  ggplot(aes(variant, value, fill = metric)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Detection variant comparison",
+    y = "metric value"
+  ) +
+  theme_minimal()
+```
+
+## Training Curves
+
+Read back the per-variant metrics that `evaluate_training()` wrote during the
+loop (one `training_eval/` directory per variant). The faceted plots below let
+you check whether each variant plateaued or was still improving when training
+stopped — if validation mAP is still rising at the last epoch, you should
+train longer; if val loss is rising while train loss falls, you're overfitting.
+
+```{r load-curves, eval=sum(library_runs$status == "success") > 0}
+successful <- library_runs |> filter(status == "success")
+
+read_variant_curves <- function(variant, model_id) {
+  eval_dir <- path(out_dir, model_id, "training_eval")
+  train_path <- path(eval_dir, "training_metrics.csv")
+  val_path   <- path(eval_dir, "validation_metrics.csv")
+
+  train_tbl <- if (file_exists(train_path)) {
+    readr::read_csv(train_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "train")
+  } else {
+    tibble::tibble(variant = variant, split = "train", epoch = integer())
+  }
+  val_tbl <- if (file_exists(val_path)) {
+    readr::read_csv(val_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "val")
+  } else {
+    tibble::tibble(variant = variant, split = "val", epoch = integer())
+  }
+  list(train = train_tbl, val = val_tbl)
+}
+
+all_curves <- purrr::map2(successful$variant, successful$model_id, read_variant_curves)
+training_curves   <- bind_rows(purrr::map(all_curves, "train")) |>
+  mutate(variant = factor(variant, levels = variants))
+validation_curves <- bind_rows(purrr::map(all_curves, "val")) |>
+  mutate(variant = factor(variant, levels = variants))
+```
+
+### Validation mAP over epochs
+
+Primary convergence signal. Flat line at the end = trained enough. Still
+climbing = train longer.
+
+```{r val-map-plot, eval=nrow(validation_curves) > 0 && "mAP_50_95" %in% names(validation_curves)}
+validation_curves |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50"))) |>
+  pivot_longer(-c(variant, epoch), names_to = "metric", values_to = "value") |>
+  filter(!is.na(value)) |>
+  ggplot(aes(epoch, value, color = variant)) +
+  geom_line() +
+  geom_point(size = 0.8, alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(
+    title = "Validation mAP by variant",
+    y = "mAP",
+    x = "epoch"
+  ) +
+  theme_minimal()
+```
+
+### Train vs val loss
+
+Overfitting check. Train loss should fall; val loss should fall then plateau.
+If val loss turns upward while train loss keeps falling, the model is
+memorizing — earlier stopping (or more regularization) would help.
+
+```{r loss-plot, eval=nrow(training_curves) > 0 && "loss" %in% names(training_curves)}
+train_loss <- training_curves |>
+  select(variant, epoch, loss) |>
+  filter(!is.na(loss)) |>
+  mutate(split = "train")
+val_loss <- if ("loss" %in% names(validation_curves)) {
+  validation_curves |>
+    select(variant, epoch, loss) |>
+    filter(!is.na(loss)) |>
+    mutate(split = "val")
+} else {
+  tibble::tibble(variant = character(), epoch = integer(), loss = numeric(), split = character())
+}
+
+bind_rows(train_loss, val_loss) |>
+  ggplot(aes(epoch, loss, color = split)) +
+  geom_line() +
+  facet_wrap(~ variant, scales = 'free_y') +
+  labs(
+    title = "Train vs validation loss",
+    y = "loss",
+    x = "epoch"
+  ) +
+  theme_minimal()
+```
+
+### Final-epoch snapshot
+
+Quick numeric answer to "did I train long enough?" — if the last few epochs
+show the metrics still climbing by >0.5% per epoch, keep going.
+
+```{r final-epochs, eval=nrow(validation_curves) > 0}
+validation_curves |>
+  group_by(variant) |>
+  slice_tail(n = 5) |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50", "loss"))) |>
+  arrange(variant, epoch)
+```
+
+## Per-Class Analysis
+
+Multi-class datasets: which classes is each variant good/bad at? Three views:
+
+1. **Per-class training curves** — how each class's mAP evolved over epochs (from
+   rfdetr's `--log-per-class-metrics` written to `validation_classwise.csv`).
+2. **Per-class SAHI eval** — final AP / AP50 / AR per class on the validation
+   set (written by `evaluate_model_sahi()` in the main loop).
+3. **Confusion matrix** — where class mistakes happen (written by
+   `confusion_matrix()` in the main loop). Matched by IoU >= 0.5; unmatched
+   predictions go to the `background` row, unmatched GT to the `background`
+   column.
+
+### Per-class training curves
+
+Per-class mAP trajectories. Classes that plateau early while others keep
+climbing usually mean the plateaued class is easy and the climbing one is
+still learning. Classes that diverge (one climbs, another drops) signal
+class imbalance pulling the optimizer.
+
+```{r per-class-curves, eval=sum(library_runs$status == "success") > 0}
+per_class_curves <- purrr::map_dfr(successful$model_id, function(mid) {
+  cw_path <- path(out_dir, mid, "training_eval", "validation_classwise.csv")
+  if (!file_exists(cw_path)) return(NULL)
+  readr::read_csv(cw_path, show_col_types = FALSE) |>
+    mutate(model_id = mid,
+           variant = successful$variant[successful$model_id == mid])
+})
+
+if (nrow(per_class_curves) > 0 && "map_50_95" %in% names(per_class_curves)) {
+  per_class_curves |>
+    mutate(variant = factor(variant, levels = variants)) |>
+    ggplot(aes(epoch, map_50_95, color = class_name)) +
+    geom_line(alpha = 0.8) +
+    geom_point(size = 0.7, alpha = 0.6) +
+    facet_wrap(~ variant) +
+    labs(
+      title = "Per-class validation mAP@[.5:.95] by variant",
+      y = "mAP", x = "epoch", color = "class"
+    ) +
+    theme_minimal()
+}
+```
+
+### Per-class SAHI eval
+
+Final per-class metrics on the validation set, evaluated with SAHI slicing
+at `slice_size = {r params$slice_size}`. Compare across variants at a glance.
+
+```{r per-class-sahi, eval=sum(library_runs$status == "success") > 0}
+per_class_sahi <- purrr::map_dfr(successful$model_id, function(mid) {
+  pc_path <- path(out_dir, mid, "per_class_metrics.csv")
+  if (!file_exists(pc_path)) return(NULL)
+  readr::read_csv(pc_path, show_col_types = FALSE) |>
+    mutate(model_id = mid,
+           variant = successful$variant[successful$model_id == mid])
+})
+per_class_sahi
+```
+
+```{r per-class-sahi-plot, eval=exists("per_class_sahi") && nrow(per_class_sahi) > 0}
+per_class_sahi |>
+  mutate(variant = factor(variant, levels = variants)) |>
+  pivot_longer(c(AP, AP50, AR), names_to = "metric", values_to = "value") |>
+  ggplot(aes(class_name, value, fill = variant)) +
+  geom_col(position = "dodge") +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(
+    title = "Per-class SAHI eval metrics by variant",
+    x = "class", y = "value"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+### Confusion matrices
+
+Rows = ground-truth class, columns = predicted class. The `background` row
+counts false positives (predictions with no GT match); the `background`
+column counts false negatives (GT boxes nothing matched). Diagonal = correct
+class, off-diagonal = class confusion at IoU >= 0.5.
+
+```{r confusion-matrices, eval=sum(library_runs$status == "success") > 0, fig.height=6}
+confusion_long <- purrr::map_dfr(successful$model_id, function(mid) {
+  cm_path <- path(out_dir, mid, "confusion_matrix.csv")
+  if (!file_exists(cm_path)) return(NULL)
+  readr::read_csv(cm_path, show_col_types = FALSE) |>
+    mutate(model_id = mid,
+           variant = successful$variant[successful$model_id == mid])
+})
+
+if (nrow(confusion_long) > 0) {
+  confusion_long |>
+    mutate(
+      variant = factor(variant, levels = variants),
+      gt_label = factor(gt_label, levels = unique(confusion_long$gt_label)),
+      pred_label = factor(pred_label, levels = levels(gt_label))
+    ) |>
+    ggplot(aes(pred_label, gt_label, fill = count)) +
+    geom_tile() +
+    geom_text(aes(label = count), size = 3) +
+    facet_wrap(~ variant) +
+    scale_fill_gradient(low = "white", high = "steelblue", trans = "log1p") +
+    labs(
+      title = "Confusion matrices (IoU >= 0.5)",
+      x = "predicted class",
+      y = "true class"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 30, hjust = 1))
+}
+```
+
+## Failures
+
+```{r failures}
+library_runs |>
+  filter(status == "failed") |>
+  select(variant, model_id, error)
+```

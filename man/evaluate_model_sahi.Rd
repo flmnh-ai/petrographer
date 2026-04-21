@@ -9,7 +9,7 @@ evaluate_model_sahi(
   annotation_json,
   image_dir = NULL,
   use_slicing = TRUE,
-  slice_size = 512,
+  slice_size = NULL,
   overlap = 0.2,
   max_images = NULL,
   save_predictions = NULL,
@@ -28,7 +28,7 @@ annotation file.}
 
 \item{use_slicing}{Whether to use SAHI sliced inference (default \code{TRUE}).}
 
-\item{slice_size}{Slice size for SAHI inference (pixels, default 512).}
+\item{slice_size}{Slice size for SAHI inference (pixels, default: use model's resolution)}
 
 \item{overlap}{Overlap ratio between slices (default 0.2).}
 

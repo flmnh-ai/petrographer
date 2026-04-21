@@ -6,7 +6,9 @@
 \alias{petrographer-package}
 \title{petrographer: Petrographic Thin Section Analysis with Deep Learning}
 \description{
-Automated petrographic analysis of thin section images using deep learning models. Provides tools for training Detectron2 models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.
+\if{html}{\figure{logo.png}{options: style='float: right' alt='logo' width='120'}}
+
+Automated petrographic analysis of thin section images using deep learning models. Provides tools for training RF-DETR detection and segmentation models, running predictions with SAHI (Slicing Aided Hyper Inference), calculating morphological properties, and analyzing results. Supports both local and HPC training workflows with seamless R-Python integration via reticulate.
 }
 \seealso{
 Useful links:

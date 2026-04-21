@@ -8,12 +8,10 @@ pg_plot_annotations(
   image_path,
   annotation_json,
   categories = NULL,
-  class_colors = NULL,
-  outline_width = 4,
-  label = TRUE,
-  label_cex = 0.8,
-  label_alpha = 0.6,
-  label_colour = "white"
+  output = NULL,
+  display = NULL,
+  draw_labels = TRUE,
+  mask_opacity = 0.4
 )
 }
 \arguments{
@@ -21,25 +19,25 @@ pg_plot_annotations(
 
 \item{annotation_json}{Path to the COCO annotations JSON containing the image.}
 
-\item{categories}{Optional vector of category names or ids to keep. NULL keeps all.}
+\item{categories}{Optional vector of category names or ids to keep.
+\code{NULL} keeps all.}
 
-\item{class_colors}{Optional named vector of colours keyed by category name.}
+\item{output}{Destination PNG path. Defaults to a tempfile.}
 
-\item{outline_width}{Line width for bounding boxes.}
+\item{display}{Whether to render the annotated image on the current graphics
+device. Defaults to \code{TRUE} in interactive sessions and inside knitr
+(so the image appears under the chunk).}
 
-\item{label}{Whether to draw category labels.}
+\item{draw_labels}{Whether to draw category labels. Default \code{TRUE}.}
 
-\item{label_cex}{Text expansion factor for labels.}
-
-\item{label_alpha}{Alpha for label background fill.}
-
-\item{label_colour}{Label text colour.}
+\item{mask_opacity}{Opacity for mask fills (segmentation datasets). Default \code{0.4}.}
 }
 \value{
-A \code{magick-image} with annotations drawn.
+The path to the written PNG, invisibly.
 }
 \description{
-Draws bounding boxes (and optional labels) from a COCO-style annotation
-file on top of an image. Returns a \code{magick-image} object that can be printed
-or written to disk.
+Draws ground-truth bounding boxes (and segmentation masks when present) from
+a COCO-style annotation file on top of an image. Rendering is delegated to
+Roboflow's \code{supervision} library via reticulate, so GT overlays stay visually
+consistent with prediction overlays produced by \code{\link[=predict_image]{predict_image()}}.
 }

@@ -3,6 +3,13 @@ title: "Dataset Slicing Example"
 format: html
 ---
 
+> **Reference notebook, not supported user docs**
+>
+> This file is kept as a slicing scratchpad from workflow development. Some
+> helper names here are stale. The reusable ideas have largely been folded into
+> `vignettes/training-models.qmd`, so treat this notebook as historical
+> reference rather than a current executable workflow.
+
 Example of slicing a dataset for improved dense detection performance.
 
 ## Setup
@@ -142,17 +149,17 @@ bind_rows(
 ## Train on Sliced Dataset
 
 ```{r train-sliced, eval=FALSE}
-# Train model on sliced data
+# Pin the sliced dataset first (train_model reads from the pin board)
+pin_dataset(sliced_dir, dataset_id = "inclusions_sliced")
+
+# Train RF-DETR on the sliced data
 model_id <- train_model(
-  data_dir = sliced_dir,
-  model_id = "inclusions_sliced",
-  ims_per_batch = 12,
-  num_workers = 12,
-  hpc_cpus_per_task = 16,
-  hpc_mem = "96gb",
-  eval_period = 200,
-  max_iter = 6000,
-  num_classes = 1
+  dataset_id    = "inclusions_sliced",
+  model_id      = "inclusions_sliced",
+  model_variant = "small",
+  epochs        = 50,
+  batch_size    = 8,         # grad_accum_steps auto-computed (effective batch 16)
+  device        = "cuda"
 )
 ```
 

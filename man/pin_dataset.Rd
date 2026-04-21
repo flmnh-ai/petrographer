@@ -7,7 +7,8 @@
 pin_dataset(data_dir, dataset_id, board = NULL, metadata = list())
 }
 \arguments{
-\item{data_dir}{Path to dataset directory}
+\item{data_dir}{Path to dataset directory, or a \code{.tar.gz} / \code{.tgz} archive
+(transparently extracted before re-pinning).}
 
 \item{dataset_id}{Name for the pinned dataset}
 

@@ -2,29 +2,30 @@
 % Please edit documentation in R/training.R
 \name{train_model_hpc}
 \alias{train_model_hpc}
-\title{Train model on HPC using SLURM}
+\title{Train model on HPC}
 \usage{
 train_model_hpc(
   data_dir,
   dataset_id,
   model_id,
   run_id,
-  max_iter,
+  model_variant,
+  resolution,
+  epochs,
+  batch_size,
+  grad_accum_steps,
   learning_rate,
-  num_classes,
-  backbone,
-  freeze_at,
-  eval_period,
-  checkpoint_period,
-  ims_per_batch,
+  workspace_dir,
+  use_amp,
+  amp_dtype,
+  gradient_checkpointing,
   num_workers,
-  hpc_cpus_per_task,
-  hpc_mem,
-  gpus,
-  workspace_dir
+  time_hours,
+  validate_every,
+  early_stopping_patience
 )
 }
 \description{
-Train model on HPC using SLURM
+Train model on HPC
 }
 \keyword{internal}

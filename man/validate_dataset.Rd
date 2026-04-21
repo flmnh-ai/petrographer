@@ -7,7 +7,10 @@
 validate_dataset(data_dir, quiet = FALSE)
 }
 \arguments{
-\item{data_dir}{Directory containing 'train' and 'valid' subdirectories}
+\item{data_dir}{Directory containing 'train' and 'valid' subdirectories, or
+a \code{.tar.gz} / \code{.tgz} archive thereof (e.g. the path returned by
+\code{\link[=get_training_dataset]{get_training_dataset()}}). Archives are transparently extracted into a
+session-scoped cache.}
 
 \item{quiet}{If TRUE, suppress CLI output while still returning diagnostics}
 }

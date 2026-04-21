@@ -1,0 +1,386 @@
+---
+title: "Train Segmentation Library Models"
+format:
+  html:
+    toc: true
+params:
+  dataset_id: "inclusions_shell"
+  data_dir: "data/processed/inclusions_shell_sliced"
+  dataset_description: "Segmentation training dataset"
+  model_id_prefix: "inclusions_shell_seg"
+  variants: ["seg_nano", "seg_small", "seg_medium", "seg_large"]
+  epochs: 120
+  batch_size: 8
+  time_hours: 8
+  validate_every: 2
+  early_stopping_patience: null
+  confidence: 0.5
+  device: "mps"
+  test_image_index: 1
+  hpc_host: "hpg"
+  hpc_base_dir: null
+  publish_to_hub: false
+  hub_board_url: null
+---
+
+Operational notebook for training multiple **segmentation** variants for the
+model library with one shared configuration.
+
+This notebook:
+
+- trains each variant in sequence
+- continues past failures and records them
+- runs a local load/predict check for successful runs
+- exports morphology summaries for successful runs
+- optionally republishes successful runs to a shared hub board
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(fs)
+library(here)
+library(pins)
+library(petrographer)
+library(hipergator)
+
+variants <- unlist(params$variants)
+stopifnot(length(variants) > 0)
+stopifnot(all(variants %in% c("seg_nano", "seg_small", "seg_medium", "seg_large",
+                              "seg_xlarge", "seg_2xlarge", "seg_preview")))
+
+hpg_configure(
+  host = params$hpc_host,
+  base_dir = params$hpc_base_dir
+)
+
+data_dir <- here(params$data_dir)
+out_dir <- here("results", "ops_segmentation_library")
+dir_create(out_dir)
+
+pin_dataset(
+  data_dir = data_dir,
+  dataset_id = params$dataset_id,
+  metadata = list(
+    description = params$dataset_description
+  )
+)
+
+dataset_board <- petrographer:::.get_dataset_board()
+dataset_path <- get_dataset_path(params$dataset_id, board = "local")
+dataset_meta <- pins::pin_meta(dataset_board, params$dataset_id)
+
+valid_images <- dir_ls(path(data_dir, "valid"), glob = "*.jpg")
+if (!length(valid_images)) {
+  valid_images <- dir_ls(path(data_dir, "valid"), glob = "*.png")
+}
+stopifnot(length(valid_images) > 0)
+
+test_image <- valid_images[[params$test_image_index]]
+
+hub_board <- if (isTRUE(params$publish_to_hub)) {
+  stopifnot(!is.null(params$hub_board_url), nzchar(params$hub_board_url))
+  board_url(params$hub_board_url)
+} else {
+  NULL
+}
+```
+
+## Submit Variants
+
+```{r submit-library}
+handles <- vector("list", length(variants))
+
+for (i in seq_along(variants)) {
+  variant <- variants[[i]]
+  model_id <- paste(params$model_id_prefix, variant, sep = "_")
+
+  config <- petrographer:::prepare_training_config(
+    data_dir = dataset_path,
+    dataset_id = params$dataset_id,
+    dataset_version = dataset_meta$version,
+    model_id = model_id,
+    model_variant = variant,
+    resolution = NULL,
+    epochs = params$epochs,
+    grad_accum_steps = NA,
+    learning_rate = NULL,
+    device = "cuda",
+    batch_size = params$batch_size,
+    use_amp = TRUE,
+    amp_dtype = "bf16",
+    gradient_checkpointing = FALSE,
+    num_workers = NULL,
+    time_hours = params$time_hours,
+    validate_every = params$validate_every,
+    early_stopping_patience = params$early_stopping_patience
+  )
+
+  handles[[i]] <- tryCatch(
+    petrographer:::submit_hpc_training(config),
+    error = function(e) list(
+      config = config,
+      submit_error = conditionMessage(e),
+      submitted_at = Sys.time()
+    )
+  )
+}
+```
+
+## Wait, Collect, and Validate
+
+```{r train-library}
+run_records <- vector("list", length(variants))
+
+for (i in seq_along(variants)) {
+  variant <- variants[[i]]
+  handle <- handles[[i]]
+  model_id <- handle$config$model_id
+
+  if (!is.null(handle$submit_error)) {
+    run_records[[i]] <- tibble::tibble(
+      variant = variant,
+      model_id = model_id,
+      status = "failed",
+      detections = NA_integer_,
+      mean_confidence = NA_real_,
+      mean_area = NA_real_,
+      total_objects = NA_real_,
+      published = FALSE,
+      error = handle$submit_error
+    )
+    next
+  }
+
+  run_records[[i]] <- tryCatch({
+    handle <- petrographer:::wait_hpc_training(handle)
+    model_dir <- petrographer:::collect_hpc_training(handle)
+
+    completed_at <- if (!is.null(handle$completed_at)) handle$completed_at else Sys.time()
+    duration_mins <- round(
+      as.numeric(difftime(completed_at, handle$submitted_at, units = "mins")),
+      1
+    )
+
+    trained_model_id <- petrographer:::finalize_trained_model(
+      model_dir = model_dir,
+      config = handle$config,
+      duration_mins = duration_mins
+    )
+
+    model <- from_pretrained(
+      trained_model_id,
+      board = "local",
+      device = params$device,
+      confidence = params$confidence
+    )
+
+    sanity_result <- predict_image(
+      image_path = test_image,
+      model = model,
+      use_slicing = FALSE,
+      output_dir = path(out_dir, trained_model_id)
+    )
+
+    training_eval <- evaluate_training(
+      model_id = trained_model_id,
+      output_dir = path(out_dir, trained_model_id, "training_eval")
+    )
+
+    seg_batch <- analyze_segmentation_dir(
+      input_dir = path(data_dir, "valid"),
+      model = model,
+      output_dir = path(out_dir, trained_model_id, "segmentation_batch")
+    )
+
+    published <- FALSE
+    if (isTRUE(params$publish_to_hub)) {
+      local_board <- pins::board_folder(here(".petrographer/models"), versioned = TRUE)
+      model_files <- pins::pin_download(local_board, trained_model_id)
+      model_dir <- fs::path_dir(model_files[[1]])
+      pin_model(
+        model_dir = model_dir,
+        model_id = trained_model_id,
+        board = hub_board,
+        metadata = list(notes = "Published from train_segmentation_library.qmd")
+      )
+      published <- TRUE
+    }
+
+    tibble::tibble(
+      variant = variant,
+      model_id = trained_model_id,
+      status = "success",
+      detections = nrow(sanity_result),
+      mean_confidence = if (nrow(sanity_result) > 0) mean(sanity_result$confidence) else NA_real_,
+      mean_area = seg_batch$population_stats$mean_area %||% NA_real_,
+      total_objects = seg_batch$population_stats$total_objects %||% NA_real_,
+      published = published,
+      error = NA_character_
+    )
+  }, error = function(e) {
+    tibble::tibble(
+      variant = variant,
+      model_id = model_id,
+      status = "failed",
+      detections = NA_integer_,
+      mean_confidence = NA_real_,
+      mean_area = NA_real_,
+      total_objects = NA_real_,
+      published = FALSE,
+      error = conditionMessage(e)
+    )
+  })
+}
+
+library_runs <- bind_rows(run_records)
+readr::write_csv(library_runs, path(out_dir, "segmentation_library_runs.csv"))
+library_runs
+```
+
+## Compare Successful Variants
+
+```{r compare}
+library_runs |>
+  filter(status == "success") |>
+  arrange(desc(total_objects))
+```
+
+```{r compare-plot, eval=sum(library_runs$status == "success") > 0}
+library_runs |>
+  filter(status == "success") |>
+  pivot_longer(c(mean_confidence, mean_area, total_objects), names_to = "metric", values_to = "value") |>
+  ggplot(aes(variant, value, fill = metric)) +
+  geom_col(position = "dodge") +
+  labs(
+    title = "Segmentation variant comparison",
+    y = "metric value"
+  ) +
+  theme_minimal()
+```
+
+## Training Curves
+
+Read back the per-variant metrics that `evaluate_training()` wrote during the
+loop (one `training_eval/` directory per variant). Check whether each variant
+plateaued or was still improving when training stopped.
+
+```{r load-curves, eval=sum(library_runs$status == "success") > 0}
+successful <- library_runs |> filter(status == "success")
+
+read_variant_curves <- function(variant, model_id) {
+  eval_dir <- path(out_dir, model_id, "training_eval")
+  train_path <- path(eval_dir, "training_metrics.csv")
+  val_path   <- path(eval_dir, "validation_metrics.csv")
+  cw_path    <- path(eval_dir, "validation_classwise.csv")
+
+  train_tbl <- if (file_exists(train_path)) {
+    readr::read_csv(train_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "train")
+  } else {
+    tibble::tibble(variant = variant, split = "train", epoch = integer())
+  }
+  val_tbl <- if (file_exists(val_path)) {
+    readr::read_csv(val_path, show_col_types = FALSE) |>
+      mutate(variant = variant, split = "val")
+  } else {
+    tibble::tibble(variant = variant, split = "val", epoch = integer())
+  }
+  cw_tbl <- if (file_exists(cw_path)) {
+    readr::read_csv(cw_path, show_col_types = FALSE) |>
+      mutate(variant = variant)
+  } else {
+    tibble::tibble(variant = variant, epoch = integer(), class_name = character())
+  }
+  list(train = train_tbl, val = val_tbl, classwise = cw_tbl)
+}
+
+all_curves <- purrr::map2(successful$variant, successful$model_id, read_variant_curves)
+training_curves   <- bind_rows(purrr::map(all_curves, "train")) |>
+  mutate(variant = factor(variant, levels = variants))
+validation_curves <- bind_rows(purrr::map(all_curves, "val")) |>
+  mutate(variant = factor(variant, levels = variants))
+classwise_curves  <- bind_rows(purrr::map(all_curves, "classwise")) |>
+  mutate(variant = factor(variant, levels = variants))
+```
+
+### Validation mAP over epochs
+
+Primary convergence signal. Flat = trained enough. Still climbing = train longer.
+
+```{r val-map-plot, eval=nrow(validation_curves) > 0 && "mAP_50_95" %in% names(validation_curves)}
+validation_curves |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50"))) |>
+  pivot_longer(-c(variant, epoch), names_to = "metric", values_to = "value") |>
+  filter(!is.na(value)) |>
+  ggplot(aes(epoch, value, color = variant)) +
+  geom_line() +
+  geom_point(size = 0.8, alpha = 0.6) +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(title = "Validation mAP by variant", y = "mAP", x = "epoch") +
+  theme_minimal()
+```
+
+### Train vs val loss
+
+Overfitting check. If val loss turns upward while train loss keeps falling,
+the model is memorizing.
+
+```{r loss-plot, eval=nrow(training_curves) > 0 && "loss" %in% names(training_curves)}
+train_loss <- training_curves |>
+  select(variant, epoch, loss) |>
+  filter(!is.na(loss)) |>
+  mutate(split = "train")
+val_loss <- if ("loss" %in% names(validation_curves)) {
+  validation_curves |>
+    select(variant, epoch, loss) |>
+    filter(!is.na(loss)) |>
+    mutate(split = "val")
+} else {
+  tibble::tibble(variant = character(), epoch = integer(), loss = numeric(), split = character())
+}
+
+bind_rows(train_loss, val_loss) |>
+  ggplot(aes(epoch, loss, color = split)) +
+  geom_line() +
+  facet_wrap(~ variant, scales = "free_y") +
+  labs(title = "Train vs validation loss", y = "loss", x = "epoch") +
+  theme_minimal()
+```
+
+### Per-class validation mAP
+
+For multi-class datasets: which classes is each variant good/bad at? Classes
+that plateau early while others keep climbing usually mean the plateaued
+class is easy and the climbing one is still learning. Large gaps between
+classes are worth flagging — could be class imbalance or annotation quality.
+
+```{r per-class-curves, eval=nrow(classwise_curves) > 0 && "map_50_95" %in% names(classwise_curves)}
+classwise_curves |>
+  filter(!is.na(map_50_95)) |>
+  ggplot(aes(epoch, map_50_95, color = class_name)) +
+  geom_line(alpha = 0.8) +
+  geom_point(size = 0.7, alpha = 0.6) +
+  facet_wrap(~ variant) +
+  labs(
+    title = "Per-class validation mAP@[.5:.95] by variant",
+    y = "mAP", x = "epoch", color = "class"
+  ) +
+  theme_minimal()
+```
+
+### Final-epoch snapshot
+
+```{r final-epochs, eval=nrow(validation_curves) > 0}
+validation_curves |>
+  group_by(variant) |>
+  slice_tail(n = 5) |>
+  select(variant, epoch, any_of(c("mAP_50_95", "mAP_50", "loss"))) |>
+  arrange(variant, epoch)
+```
+
+## Failures
+
+```{r failures}
+library_runs |>
+  filter(status == "failed") |>
+  select(variant, model_id, error)
+```
